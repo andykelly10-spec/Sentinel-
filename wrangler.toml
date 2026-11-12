@@ -1,0 +1,30 @@
+name = "sentinel"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sentinel"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+CLASSIFIER_MODEL = "claude-opus-5-5"
+MIN_EMAIL_SEVERITY = "medium"
+DASHBOARD_URL = ""
+ALERT_EMAIL_FROM = ""
+ALERT_EMAIL_TO = ""
+ALERT_SMS_TO = ""
+TWILIO_FROM_NUMBER = ""
+
+# Secrets, set with `wrangler secret put <NAME>`:
+#   ANTHROPIC_API_KEY, DASHBOARD_PASSWORD, SENDGRID_API_KEY,
+#   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN

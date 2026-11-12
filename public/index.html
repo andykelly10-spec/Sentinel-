@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sentinel</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --border: #dfe3e8;
+    --text: #151a23;
+    --muted: #5d6877;
+    --accent: #1f4fd8;
+    --critical: #c4261b;
+    --high: #c9530a;
+    --medium: #96690a;
+    --low: #5d6877;
+    --ok: #17794a;
+    --critical-bg: #fdeceb;
+    --high-bg: #fdf0e6;
+    --medium-bg: #fbf3df;
+    --low-bg: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --surface: #171b22;
+      --border: #2a303a;
+      --text: #e8ebf0;
+      --muted: #97a1b0;
+      --accent: #7da2ff;
+      --critical: #ff6b5e;
+      --high: #ff9a52;
+      --medium: #e8bd4f;
+      --low: #97a1b0;
+      --ok: #4cc38a;
+      --critical-bg: #2e1614;
+      --high-bg: #2e1d10;
+      --medium-bg: #2b2410;
+      --low-bg: #20252d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  .tagline { color: var(--muted); font-size: 13px; }
+  .run { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+  button, select {
+    font: inherit;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { color: #0e1116; } }
+
+  .counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0 12px; }
+  .count {
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border-left: 4px solid var(--sev);
+  }
+  .count[aria-pressed="true"] { border-color: var(--sev); background: var(--sev-bg); }
+  .count .n { display: block; font-size: 26px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .count .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sev); font-weight: 600; }
+  .critical { --sev: var(--critical); --sev-bg: var(--critical-bg); }
+  .high { --sev: var(--high); --sev-bg: var(--high-bg); }
+  .medium { --sev: var(--medium); --sev-bg: var(--medium-bg); }
+  .low { --sev: var(--low); --sev-bg: var(--low-bg); }
+
+  .health { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
+  .dot.bad { background: var(--critical); }
+  .dot.off { background: var(--border); }
+  .notes {
+    margin: 8px 0 0;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--high);
+    border-radius: 8px;
+    background: var(--surface);
+    font-size: 13px;
+  }
+  .notes ul { margin: 4px 0 0; padding-left: 18px; }
+
+  .filters { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 24px 0 12px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tabs button[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
+
+  .alert {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--sev);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+  .alert.closed { opacity: 0.65; }
+  .alert .tags { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sev); }
+  .alert .tags .state { color: var(--muted); font-weight: 500; }
+  .alert h2 { margin: 2px 0 4px; font-size: 16px; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
+  .alert h2 a { color: inherit; text-decoration: none; }
+  .alert h2 a:hover { text-decoration: underline; }
+  .alert p { margin: 0 0 8px; color: var(--text); overflow-wrap: anywhere; }
+  .alert .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .alert .meta { font-size: 12px; color: var(--muted); }
+  .alert .actions { display: flex; gap: 6px; }
+  .alert .actions button { padding: 4px 10px; }
+  .empty { text-align: center; color: var(--muted); padding: 48px 16px; border: 1px dashed var(--border); border-radius: 8px; }
+  .error { color: var(--critical); }
+  @media (max-width: 560px) { .counts { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Sentinel</h1>
+      <div class="tagline">Security monitoring for Skydance and Paramount Skydance</div>
+    </div>
+    <div class="run">
+      <span id="last-run">Loading…</span>
+      <button id="run-now" class="primary">Check now</button>
+    </div>
+  </header>
+
+  <section class="counts" id="counts" aria-label="Open alerts by severity"></section>
+  <div class="health" id="health" aria-label="Source and delivery health"></div>
+  <div id="notes"></div>
+
+  <div class="filters">
+    <div class="tabs" id="categories" role="group" aria-label="Category"></div>
+    <label>
+      <span class="tagline">Show</span>
+      <select id="status">
+        <option value="new">Open</option>
+        <option value="acknowledged">Acknowledged</option>
+        <option value="dismissed">Dismissed</option>
+        <option value="">All</option>
+      </select>
+    </label>
+  </div>
+
+  <section id="alerts" aria-live="polite"></section>
+</main>
+
+<script>
+const SEVERITIES = ["critical", "high", "medium", "low"];
+const CATEGORIES = [
+  ["", "All"],
+  ["physical", "Physical"],
+  ["cyber", "Cyber"],
+  ["brand", "Brand"],
+  ["executive", "Executive"],
+  ["unclassified", "Needs review"],
+];
+const SOURCE_NAMES = { google_news: "Google News", gdelt: "GDELT", reddit: "Reddit", hackernews: "Hacker News" };
+const state = { category: "", severity: "", status: "new" };
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  node.append(...children);
+  return node;
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  return response.json();
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)} h ago`;
+  return `${Math.round(minutes / 1440)} d ago`;
+}
+
+function safeUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderStatus(status) {
+  const counts = document.getElementById("counts");
+  counts.replaceChildren(
+    ...SEVERITIES.map((severity) =>
+      el(
+        "button",
+        {
+          class: `count ${severity}`,
+          "aria-pressed": String(state.severity === severity),
+          onclick: () => {
+            state.severity = state.severity === severity ? "" : severity;
+            refresh();
+          },
+        },
+        el("span", { class: "n" }, String(status.open[severity] ?? 0)),
+        el("span", { class: "label" }, severity),
+      ),
+    ),
+  );
+
+  const run = status.lastRun;
+  document.getElementById("last-run").textContent = run
+    ? `Last check ${ago(run.finishedAt)} · ${run.newItems} new item${run.newItems === 1 ? "" : "s"}, ${run.alerts} alert${run.alerts === 1 ? "" : "s"}`
+    : "No checks have run yet";
+
+  const health = document.getElementById("health");
+  const sources = (run?.sources ?? []).map((source) =>
+    el(
+      "span",
+      { title: source.error ?? "" },
+      el("span", { class: source.error ? "dot bad" : "dot" }),
+      `${SOURCE_NAMES[source.source] ?? source.source}: ${source.error ? "failed" : source.count}`,
+    ),
+  );
+  const channel = (name, on) => el("span", {}, el("span", { class: on ? "dot" : "dot off" }), `${name} ${on ? "on" : "not set up"}`);
+  health.replaceChildren(...sources, channel("Email", status.email), channel("SMS", status.sms));
+
+  const problems = [
+    ...(run?.sources ?? []).filter((s) => s.error).map((s) => `${SOURCE_NAMES[s.source] ?? s.source}: ${s.error}`),
+    ...(run?.errors ?? []),
+  ];
+  const notes = document.getElementById("notes");
+  notes.replaceChildren(
+    ...(problems.length
+      ? [el("div", { class: "notes" }, "From the last check:", el("ul", {}, ...problems.map((text) => el("li", {}, text))))]
+      : []),
+  );
+}
+
+function renderCategories() {
+  document.getElementById("categories").replaceChildren(
+    ...CATEGORIES.map(([value, label]) =>
+      el(
+        "button",
+        {
+          "aria-pressed": String(state.category === value),
+          onclick: () => {
+            state.category = value;
+            refresh();
+          },
+        },
+        label,
+      ),
+    ),
+  );
+}
+
+async function setStatus(id, status) {
+  await api(`/api/alerts/${id}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  refresh();
+}
+
+function renderAlert(alert) {
+  const href = safeUrl(alert.url);
+  const title = href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, alert.title) : alert.title;
+  const category = alert.category === "unclassified" ? "needs review" : alert.category;
+  const actions =
+    alert.status === "new"
+      ? [
+          el("button", { onclick: () => setStatus(alert.id, "acknowledged") }, "Acknowledge"),
+          el("button", { onclick: () => setStatus(alert.id, "dismissed") }, "Dismiss"),
+        ]
+      : [el("button", { onclick: () => setStatus(alert.id, "new") }, "Reopen")];
+  const origin = [alert.author, SOURCE_NAMES[alert.source] ?? alert.source].filter(Boolean).join(" · ");
+  return el(
+    "article",
+    { class: `alert ${alert.severity}${alert.status === "new" ? "" : " closed"}` },
+    el(
+      "div",
+      { class: "tags" },
+      `${alert.severity} · ${category}`,
+      alert.status === "new" ? "" : el("span", { class: "state" }, ` · ${alert.status}`),
+    ),
+    el("h2", {}, title),
+    el("p", {}, alert.summary),
+    el(
+      "div",
+      { class: "foot" },
+      el("span", { class: "meta" }, `${origin} · ${ago(alert.publishedAt ?? alert.firstSeenAt)}`),
+      el("div", { class: "actions" }, ...actions),
+    ),
+  );
+}
+
+async function refresh() {
+  renderCategories();
+  const list = document.getElementById("alerts");
+  try {
+    const query = new URLSearchParams(Object.entries(state).filter(([, value]) => value));
+    const [status, { alerts }] = await Promise.all([api("/api/status"), api(`/api/alerts?${query}`)]);
+    renderStatus(status);
+    list.replaceChildren(
+      ...(alerts.length
+        ? alerts.map(renderAlert)
+        : [el("div", { class: "empty" }, "No alerts match these filters.")]),
+    );
+  } catch (error) {
+    list.replaceChildren(el("div", { class: "empty error" }, `Could not load alerts. ${error.message}`));
+  }
+}
+
+document.getElementById("status").addEventListener("change", (event) => {
+  state.status = event.target.value;
+  refresh();
+});
+
+document.getElementById("run-now").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    await api("/api/run", { method: "POST" });
+    await refresh();
+  } catch (error) {
+    document.getElementById("last-run").textContent = `Check failed. ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check now";
+  }
+});
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
