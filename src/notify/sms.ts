@@ -1,19 +1,21 @@
+import { proximityLabel } from "../geo";
 import { truncate } from "../text";
-import type { Alert } from "../types";
+import type { AlertGroup } from "./group";
 
 const MAX_INDIVIDUAL = 3;
 
 // A burst of urgent alerts becomes one text rather than a flood.
-export function smsBodies(alerts: Alert[], dashboardUrl: string): string[] {
+export function smsBodies(groups: AlertGroup[], dashboardUrl: string): string[] {
   const link = dashboardUrl ? ` ${dashboardUrl}` : "";
-  if (alerts.length > MAX_INDIVIDUAL) {
-    const critical = alerts.filter((alert) => alert.severity === "critical").length;
-    return [`Sentinel: ${alerts.length} urgent alerts (${critical} critical). Check the dashboard now.${link}`];
+  if (groups.length > MAX_INDIVIDUAL) {
+    const critical = groups.filter((group) => group.alert.severity === "critical").length;
+    return [`Sentinel: ${groups.length} urgent alerts (${critical} critical). Check the dashboard now.${link}`];
   }
-  return alerts.map(
-    (alert) =>
-      `Sentinel ${alert.severity.toUpperCase()} ${alert.category}: ${truncate(alert.summary || alert.title, 240)}${link}`,
-  );
+  return groups.map(({ alert }) => {
+    const near = proximityLabel(alert.site, alert.distanceMi);
+    const text = truncate(alert.summary || alert.title, 240);
+    return `Sentinel ${alert.severity.toUpperCase()} ${alert.category}: ${text}${near ? ` (${near})` : ""}${link}`;
+  });
 }
 
 export async function sendSms(

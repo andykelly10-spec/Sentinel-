@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { emailHtml } from "../src/notify/email";
+import { distanceMiles, nearestSite, proximityLabel } from "../src/geo";
+import { emailHtml, emailText } from "../src/notify/email";
+import { groupForNotification } from "../src/notify/group";
 import { needsEmail, needsSms, recipients } from "../src/notify/rules";
 import { smsBodies } from "../src/notify/sms";
-import type { Alert } from "../src/types";
+import { severityRank, type Alert } from "../src/types";
+import { WATCHLIST } from "../src/watchlist";
 
 function alert(fields: Partial<Alert>): Alert {
   return {
@@ -18,9 +21,17 @@ function alert(fields: Partial<Alert>): Alert {
     severity: "medium",
     summary: "Summary",
     status: "new",
+    incident: "",
+    place: "",
+    lat: null,
+    lon: null,
+    site: "",
+    distanceMi: null,
     ...fields,
   };
 }
+
+const single = (fields: Partial<Alert>) => ({ alert: alert(fields), reports: 1 });
 
 describe("notification rules", () => {
   it("emails at or above the configured severity, defaulting to medium", () => {
@@ -45,23 +56,79 @@ describe("notification rules", () => {
   });
 });
 
-describe("smsBodies", () => {
-  it("collapses a burst into a single text", () => {
-    const burst = Array.from({ length: 5 }, (_, i) => alert({ severity: i < 2 ? "critical" : "high" }));
-    expect(smsBodies(burst, "")).toEqual(["Sentinel: 5 urgent alerts (2 critical). Check the dashboard now."]);
-    expect(smsBodies(burst.slice(0, 3), "")).toHaveLength(3);
+describe("groupForNotification", () => {
+  const shooting = (severity: Alert["severity"], id: string) => alert({ id, severity, incident: "Farragut Square shooting" });
+
+  it("collapses reports of one incident and keeps unrelated alerts separate", () => {
+    const groups = groupForNotification(
+      [shooting("critical", "1"), shooting("critical", "2"), alert({ id: "3", severity: "high" }), shooting("high", "4")],
+      new Map(),
+    );
+    expect(groups.map((group) => [group.alert.id, group.reports])).toEqual([
+      ["1", 3],
+      ["3", 1],
+    ]);
+  });
+
+  it("stays quiet about an announced incident unless it escalates", () => {
+    const announcedHigh = new Map([["Farragut Square shooting", severityRank("high")]]);
+    expect(groupForNotification([shooting("high", "1"), shooting("medium", "2")], announcedHigh)).toEqual([]);
+    expect(groupForNotification([shooting("critical", "1")], announcedHigh)).toHaveLength(1);
   });
 });
 
-describe("emailHtml", () => {
+describe("proximity", () => {
+  const bureau = WATCHLIST.sites.find((site) => site.name === "CBS News Washington Bureau")!;
+
+  it("measures distance in miles", () => {
+    // Logan Circle is a little under a mile from 2020 M St NW.
+    expect(distanceMiles(38.9096, -77.0296, bureau.lat, bureau.lon)).toBeGreaterThan(0.7);
+    expect(distanceMiles(38.9096, -77.0296, bureau.lat, bureau.lon)).toBeLessThan(1.1);
+  });
+
+  it("finds the nearest site and ignores events far from all of them", () => {
+    expect(nearestSite(38.9096, -77.0296, WATCHLIST.sites)).toEqual({ site: bureau.name, distanceMi: 0.9 });
+    expect(nearestSite(40.7614, -73.9776, WATCHLIST.sites)!.site).toBe("Paramount Skydance New York");
+    expect(nearestSite(41.8781, -87.6298, WATCHLIST.sites)).toBeNull();
+    expect(nearestSite(null, null, WATCHLIST.sites)).toBeNull();
+  });
+
+  it("describes proximity for people", () => {
+    expect(proximityLabel(bureau.name, 0.9)).toBe("about 0.9 mi from CBS News Washington Bureau");
+    expect(proximityLabel("", null)).toBe("");
+  });
+});
+
+describe("smsBodies", () => {
+  it("collapses a burst into a single text", () => {
+    const burst = Array.from({ length: 5 }, (_, i) => single({ severity: i < 2 ? "critical" : "high" }));
+    expect(smsBodies(burst, "")).toEqual(["Sentinel: 5 urgent alerts (2 critical). Check the dashboard now."]);
+    expect(smsBodies(burst.slice(0, 3), "")).toHaveLength(3);
+  });
+
+  it("says how close the incident is", () => {
+    const near = single({ severity: "critical", category: "physical", summary: "Shots fired.", site: "CBS News Washington Bureau", distanceMi: 0.4 });
+    expect(smsBodies([near], "")).toEqual([
+      "Sentinel CRITICAL physical: Shots fired. (about 0.4 mi from CBS News Washington Bureau)",
+    ]);
+  });
+});
+
+describe("email", () => {
   it("escapes untrusted text and refuses non-http links", () => {
     const html = emailHtml(
-      [alert({ title: '<img src=x onerror="alert(1)">', summary: "<script>x</script>", url: "javascript:alert(1)" })],
+      [single({ title: '<img src=x onerror="alert(1)">', summary: "<script>x</script>", url: "javascript:alert(1)" })],
       "",
     );
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("javascript:");
     expect(html).toContain("&lt;img src=x");
+  });
+
+  it("leads with the incident name and report count", () => {
+    const group = { alert: alert({ severity: "critical", category: "physical", incident: "Farragut Square shooting", site: "CBS News Washington Bureau", distanceMi: 0.4 }), reports: 3 };
+    expect(emailText([group], "")).toContain("[CRITICAL] physical: Farragut Square shooting (3 reports)");
+    expect(emailText([group], "")).toContain("about 0.4 mi from CBS News Washington Bureau");
   });
 });

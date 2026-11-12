@@ -1,35 +1,45 @@
 import { isHttpUrl, normalizeTitle, sha256Hex } from "../text";
 import type { Candidate, RawItem, SourceName, SourceResult } from "../types";
-import { fetchBingNews } from "./bingNews";
-import { fetchBluesky } from "./bluesky";
+import type { Watchlist } from "../watchlist";
+import { fetchBingLocal, fetchBingNews } from "./bingNews";
+import { fetchBluesky, fetchBlueskyUrgent } from "./bluesky";
 import { fetchGoogleNews } from "./googleNews";
 import { fetchHackerNews } from "./hackerNews";
 import { fetchLemmy } from "./lemmy";
 
 const MAX_AGE_MS = 3 * 86_400_000;
 
-const SOURCES: Array<{ name: SourceName; fetch: (terms: string[], now: Date) => Promise<RawItem[]> }> = [
-  { name: "bing_news", fetch: fetchBingNews },
-  { name: "google_news", fetch: fetchGoogleNews },
-  { name: "bluesky", fetch: fetchBluesky },
-  { name: "lemmy", fetch: fetchLemmy },
-  { name: "hackernews", fetch: fetchHackerNews },
+const SOURCES: Array<{ name: SourceName; fetch: (watch: Watchlist, now: Date) => Promise<RawItem[]> }> = [
+  { name: "bing_news", fetch: (watch) => fetchBingNews(watch.searchTerms) },
+  {
+    name: "bing_local",
+    fetch: (watch) => fetchBingLocal([...new Set(watch.sites.map((site) => site.area))], watch.incidentTerms),
+  },
+  { name: "google_news", fetch: (watch) => fetchGoogleNews(watch.searchTerms) },
+  { name: "bluesky", fetch: (watch, now) => fetchBluesky(watch.searchTerms, now) },
+  {
+    name: "bluesky_urgent",
+    fetch: (watch, now) =>
+      fetchBlueskyUrgent(watch.urgentTerms, [...new Set(watch.sites.flatMap((site) => site.areaKeywords))], now),
+  },
+  { name: "lemmy", fetch: (watch) => fetchLemmy(watch.searchTerms) },
+  { name: "hackernews", fetch: (watch, now) => fetchHackerNews(watch.searchTerms, now) },
 ];
 
 // News stories are syndicated under one headline across many URLs, so a
 // distinctive headline is their identity. Social posts are identified by URL.
 export async function candidateId(item: RawItem): Promise<string> {
   const title = normalizeTitle(item.title);
-  const isNews = item.source === "google_news" || item.source === "bing_news";
+  const isNews = item.source === "google_news" || item.source === "bing_news" || item.source === "bing_local";
   const key = isNews && title.length >= 25 ? `t:${title}` : `u:${item.url}`;
   return (await sha256Hex(key)).slice(0, 32);
 }
 
 export async function collect(
-  terms: string[],
+  watch: Watchlist,
   now: Date,
 ): Promise<{ candidates: Candidate[]; sources: SourceResult[] }> {
-  const settled = await Promise.allSettled(SOURCES.map((source) => source.fetch(terms, now)));
+  const settled = await Promise.allSettled(SOURCES.map((source) => source.fetch(watch, now)));
 
   const sources: SourceResult[] = [];
   const byId = new Map<string, Candidate>();

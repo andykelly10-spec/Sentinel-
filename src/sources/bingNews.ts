@@ -4,6 +4,10 @@ import { getText, quoted, toIso } from "./http";
 import { rssItems, tagText } from "./rss";
 
 // Bing wraps each article in a click-tracking link; the article is in `url`.
+function searchUrl(query: string): string {
+  return `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&qft=${encodeURIComponent('sortbydate="1"')}`;
+}
+
 function articleUrl(link: string): string {
   try {
     return new URL(link).searchParams.get("url") ?? link;
@@ -12,9 +16,9 @@ function articleUrl(link: string): string {
   }
 }
 
-export function parseBingNewsRss(xml: string): RawItem[] {
+export function parseBingNewsRss(xml: string, source: "bing_news" | "bing_local" = "bing_news"): RawItem[] {
   return rssItems(xml).map((block) => ({
-    source: "bing_news",
+    source,
     url: articleUrl(tagText(block, "link")),
     title: tagText(block, "title"),
     snippet: truncate(stripHtml(tagText(block, "description")), 600),
@@ -25,12 +29,14 @@ export function parseBingNewsRss(xml: string): RawItem[] {
 
 // Each response holds about a dozen articles, so every term gets its own request.
 export async function fetchBingNews(terms: string[]): Promise<RawItem[]> {
-  const pages = await Promise.all(
-    quoted(terms).map((phrase) =>
-      getText(
-        `https://www.bing.com/news/search?q=${encodeURIComponent(phrase)}&format=rss&qft=${encodeURIComponent('sortbydate="1"')}`,
-      ),
-    ),
-  );
-  return pages.flatMap(parseBingNewsRss);
+  const pages = await Promise.all(quoted(terms).map((phrase) => getText(searchUrl(phrase))));
+  return pages.flatMap((page) => parseBingNewsRss(page));
+}
+
+// One search per area for news of violent or disruptive incidents there. The
+// area must be quoted or Bing ignores the incident terms.
+export async function fetchBingLocal(areas: string[], incidentTerms: string[]): Promise<RawItem[]> {
+  const incidents = `(${quoted(incidentTerms).join(" OR ")})`;
+  const pages = await Promise.all(quoted(areas).map((area) => getText(searchUrl(`${area} ${incidents}`))));
+  return pages.flatMap((page) => parseBingNewsRss(page, "bing_local"));
 }

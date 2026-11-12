@@ -17,7 +17,14 @@ export interface Env {
   TWILIO_FROM_NUMBER: string;
 }
 
-export type SourceName = "bing_news" | "google_news" | "bluesky" | "lemmy" | "hackernews";
+export type SourceName =
+  | "bing_news"
+  | "bing_local"
+  | "google_news"
+  | "bluesky"
+  | "bluesky_urgent"
+  | "lemmy"
+  | "hackernews";
 
 export interface RawItem {
   source: SourceName;
@@ -43,9 +50,17 @@ export interface Classification {
   category: Category;
   severity: Severity;
   summary: string;
+  // A short shared name for the real-world event, so reports of it group together.
+  incident: string;
+  place: string;
+  lat: number | null;
+  lon: number | null;
 }
 
-export interface ClassifiedItem extends Candidate, Classification {}
+export interface ClassifiedItem extends Candidate, Classification {
+  site: string;
+  distanceMi: number | null;
+}
 
 export interface Alert extends ClassifiedItem {
   firstSeenAt: string;

@@ -1,12 +1,14 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { Env } from "../src/types";
 
-// A D1 stand-in backed by SQLite, loaded with the real migration and
+// A D1 stand-in backed by SQLite, loaded with the real migrations and
 // enforcing D1's limit of 100 bound parameters per statement.
 export function createTestDb(): D1Database {
   const sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(readFileSync("migrations/0001_init.sql", "utf8"));
+  for (const file of readdirSync("migrations").sort()) {
+    sqlite.exec(readFileSync(`migrations/${file}`, "utf8"));
+  }
 
   const statement = (sql: string, params: SQLInputValue[]) => {
     if (params.length > 100) throw new Error(`too many bound parameters: ${params.length}`);
@@ -133,3 +135,46 @@ export const HN_JSON = JSON.stringify({
     },
   ],
 });
+
+export const BING_LOCAL_RSS = `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><title>local - BingNews</title>
+<item><title>Shooting reported near Farragut Square in Washington DC, suspect at large</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3a%2f%2flocal.example%2ffarragut-shooting&amp;c=1</link><description>Police are asking people to avoid the area around 17th and K streets.</description><pubDate>Thu, 12 Nov 2026 11:40:00 GMT</pubDate><News:Source>Local Example</News:Source></item>
+<item><title>Road closures announced for weekend marathon in Washington DC</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3a%2f%2flocal.example%2fmarathon&amp;c=1</link><description>Expect delays downtown.</description><pubDate>Thu, 12 Nov 2026 09:00:00 GMT</pubDate><News:Source>Local Example</News:Source></item>
+</channel></rss>`;
+
+export const EMPTY_RSS = `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><title>none</title></channel></rss>`;
+
+export const BLUESKY_URGENT_JSON = JSON.stringify({
+  posts: [
+    {
+      uri: "at://did:plc:dc1/app.bsky.feed.post/3urgentdc",
+      author: { handle: "dcresident.bsky.social" },
+      record: { createdAt: "2026-11-12T11:45:00.000Z", text: "Active shooter reported near Farragut Square in DC. Avoid the area." },
+    },
+    {
+      uri: "at://did:plc:mke1/app.bsky.feed.post/3urgentmke",
+      author: { handle: "mkenews.bsky.social" },
+      record: { createdAt: "2026-11-12T11:30:00.000Z", text: "Active shooter drill scheduled at a Milwaukee high school today." },
+    },
+  ],
+});
+
+// Answers each source the way the live service would for that query.
+export function sourceResponse(url: URL, overrides: { bingLocal?: string } = {}): Response | null {
+  const query = url.searchParams.get("q") ?? "";
+  switch (url.hostname) {
+    case "www.bing.com":
+      if (!query.includes(" OR ")) return new Response(BING_NEWS_RSS);
+      return new Response(query.includes("Washington DC") ? (overrides.bingLocal ?? BING_LOCAL_RSS) : EMPTY_RSS);
+    case "api.bsky.app":
+      if (query === '"active shooter"') return new Response(BLUESKY_URGENT_JSON);
+      return new Response(query === '"Skydance"' || query === '"David Ellison"' ? BLUESKY_JSON : '{"posts":[]}');
+    case "news.google.com":
+      return new Response(GOOGLE_NEWS_RSS);
+    case "lemmy.world":
+      return new Response(LEMMY_JSON);
+    case "hn.algolia.com":
+      return new Response(HN_JSON);
+    default:
+      return null;
+  }
+}

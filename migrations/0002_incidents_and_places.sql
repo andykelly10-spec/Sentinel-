@@ -1,0 +1,8 @@
+ALTER TABLE items ADD COLUMN incident TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN place TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN lat REAL;
+ALTER TABLE items ADD COLUMN lon REAL;
+ALTER TABLE items ADD COLUMN site TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN distance_mi REAL;
+
+CREATE INDEX idx_items_incident ON items (incident, first_seen_at);

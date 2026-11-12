@@ -6,7 +6,8 @@ import { parseGoogleNewsRss } from "../src/sources/googleNews";
 import { parseHackerNews } from "../src/sources/hackerNews";
 import { parseLemmy } from "../src/sources/lemmy";
 import type { RawItem } from "../src/types";
-import { BING_NEWS_RSS, BLUESKY_JSON, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW } from "./helpers";
+import { WATCHLIST } from "../src/watchlist";
+import { BING_NEWS_RSS, BLUESKY_JSON, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW, sourceResponse } from "./helpers";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -125,48 +126,49 @@ describe("candidateId", () => {
 });
 
 function stubSources(requested: string[], overrides: Record<string, () => Response> = {}) {
-  const bodies: Record<string, string> = {
-    "www.bing.com": BING_NEWS_RSS,
-    "news.google.com": GOOGLE_NEWS_RSS,
-    "api.bsky.app": BLUESKY_JSON,
-    "lemmy.world": LEMMY_JSON,
-    "hn.algolia.com": HN_JSON,
-  };
   vi.stubGlobal("fetch", async (input: string) => {
     requested.push(input);
-    const { hostname } = new URL(input);
-    return overrides[hostname]?.() ?? new Response(bodies[hostname]);
+    const url = new URL(input);
+    return overrides[url.hostname]?.() ?? sourceResponse(url)!;
   });
 }
+
+const watch = (searchTerms: string[]) => ({ ...WATCHLIST, searchTerms });
 
 describe("collect", () => {
   it("merges sources, drops stale items and isolates a failing source", async () => {
     const requested: string[] = [];
     stubSources(requested, { "news.google.com": () => new Response("<html>Sorry...</html>", { status: 503 }) });
 
-    const { candidates, sources } = await collect(["Skydance"], NOW);
+    const { candidates, sources } = await collect(watch(["Skydance"]), NOW);
 
     expect(sources).toEqual([
       { source: "bing_news", count: 2, error: null },
+      { source: "bing_local", count: 2, error: null },
       { source: "google_news", count: 0, error: "HTTP 503" },
       { source: "bluesky", count: 1, error: null },
+      // The Milwaukee post uses an urgent term but is not near any site.
+      { source: "bluesky_urgent", count: 1, error: null },
       { source: "lemmy", count: 2, error: null },
       { source: "hackernews", count: 2, error: null },
     ]);
-    expect(candidates).toHaveLength(7);
+    expect(candidates).toHaveLength(10);
   });
 
   it("keeps one copy of a story reported by two news sources", async () => {
     stubSources([]);
-    const { candidates, sources } = await collect(["Skydance"], NOW);
+    const { candidates, sources } = await collect(watch(["Skydance"]), NOW);
     // Google's month-old item is dropped, and its protest story duplicates Bing's.
     expect(sources.find((source) => source.source === "google_news")).toEqual({ source: "google_news", count: 2, error: null });
     expect(candidates.map((c) => c.title).sort()).toEqual([
+      "Active shooter reported near Farragut Square in DC. Avoid the area.",
       "Comment on: Ask HN: studio security practices",
       "Comment on: Studio merger talks reported",
       "Hacking group claims breach of Skydance Games internal servers",
       "Just saw the new Skydance trailer. Looks great!",
       "Protesters plan demonstration outside Skydance Animation premiere",
+      "Road closures announced for weekend marathon in Washington DC",
+      "Shooting reported near Farragut Square in Washington DC, suspect at large",
       "Skydance & partners unveil the studio's 2027 film slate",
       "Skydance open-sources its render pipeline",
       "Skydance sets release date for its next animated feature",
@@ -174,18 +176,34 @@ describe("collect", () => {
     expect(candidates.find((c) => c.title.startsWith("Protesters"))!.source).toBe("bing_news");
   });
 
-  it("builds each source's query from the search terms", async () => {
+  it("builds each source's query from the watchlist", async () => {
     const requested: string[] = [];
     stubSources(requested);
-    await collect(["Skydance", "David Ellison"], NOW);
-    const byHost = (host: string) => requested.map((url) => new URL(url)).filter((url) => url.hostname === host);
+    await collect(watch(["Skydance", "David Ellison"]), NOW);
+    const queries = (host: string) =>
+      requested.map((url) => new URL(url)).filter((url) => url.hostname === host).map((url) => url.searchParams.get("q"));
+    const incidents = '("active shooter" OR "shooting" OR "bomb threat" OR "explosion" OR "evacuation" OR "lockdown")';
 
-    expect(byHost("news.google.com").map((url) => url.searchParams.get("q"))).toEqual(['"Skydance" OR "David Ellison" when:2d']);
-    expect(byHost("www.bing.com").map((url) => url.searchParams.get("q"))).toEqual(['"Skydance"', '"David Ellison"']);
-    expect(byHost("www.bing.com")[0]!.searchParams.get("qft")).toBe('sortbydate="1"');
-    expect(byHost("api.bsky.app").map((url) => url.searchParams.get("q"))).toEqual(['"Skydance"', '"David Ellison"']);
-    expect(byHost("api.bsky.app")[0]!.searchParams.get("since")).toBe("2026-11-10T12:00:00.000Z");
-    expect(byHost("lemmy.world").map((url) => url.searchParams.get("q"))).toEqual(["Skydance", "David Ellison"]);
-    expect(byHost("hn.algolia.com")).toHaveLength(2);
+    expect(queries("news.google.com")).toEqual(['"Skydance" OR "David Ellison" when:2d']);
+    // Two brand searches, then one incident search per distinct area.
+    expect(queries("www.bing.com")).toEqual([
+      '"Skydance"',
+      '"David Ellison"',
+      `"Hollywood" ${incidents}`,
+      `"Santa Monica" ${incidents}`,
+      `"Manhattan" ${incidents}`,
+      `"Washington DC" ${incidents}`,
+    ]);
+    expect(queries("api.bsky.app")).toEqual([
+      '"Skydance"',
+      '"David Ellison"',
+      '"active shooter"',
+      '"bomb threat"',
+      '"shelter in place"',
+    ]);
+    expect(queries("lemmy.world")).toEqual(["Skydance", "David Ellison"]);
+    expect(queries("hn.algolia.com")).toHaveLength(2);
+    const bluesky = requested.map((url) => new URL(url)).find((url) => url.hostname === "api.bsky.app")!;
+    expect(bluesky.searchParams.get("since")).toBe("2026-11-10T12:00:00.000Z");
   });
 });

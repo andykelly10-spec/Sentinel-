@@ -1,5 +1,6 @@
+import { proximityLabel } from "../geo";
 import { escapeHtml, isHttpUrl } from "../text";
-import type { Alert } from "../types";
+import type { AlertGroup } from "./group";
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "#b42318",
@@ -8,22 +9,27 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "#52606d",
 };
 
-export function emailSubject(alerts: Alert[]): string {
-  const critical = alerts.filter((alert) => alert.severity === "critical").length;
-  const count = `${alerts.length} new alert${alerts.length === 1 ? "" : "s"}`;
+export function emailSubject(groups: AlertGroup[]): string {
+  const critical = groups.filter((group) => group.alert.severity === "critical").length;
+  const count = `${groups.length} new alert${groups.length === 1 ? "" : "s"}`;
   return critical > 0 ? `[Sentinel] ${count} (${critical} critical)` : `[Sentinel] ${count}`;
 }
 
-function origin(alert: Alert): string {
-  return [alert.author, alert.source.replace("_", " ")].filter(Boolean).join(" via ");
+function headline({ alert, reports }: AlertGroup): string {
+  return alert.incident ? `${alert.incident} (${reports} report${reports === 1 ? "" : "s"})` : alert.title;
 }
 
-export function emailText(alerts: Alert[], dashboardUrl: string): string {
-  const blocks = alerts.map((alert) =>
+function details({ alert }: AlertGroup): string {
+  const origin = [alert.author, alert.source.replace("_", " ")].filter(Boolean).join(" via ");
+  return [proximityLabel(alert.site, alert.distanceMi), origin].filter(Boolean).join(" | ");
+}
+
+export function emailText(groups: AlertGroup[], dashboardUrl: string): string {
+  const blocks = groups.map((group) =>
     [
-      `[${alert.severity.toUpperCase()}] ${alert.category}: ${alert.title}`,
-      alert.summary,
-      `${origin(alert)} | ${alert.url}`,
+      `[${group.alert.severity.toUpperCase()}] ${group.alert.category}: ${headline(group)}`,
+      group.alert.summary,
+      `${details(group)} | ${group.alert.url}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -32,18 +38,19 @@ export function emailText(alerts: Alert[], dashboardUrl: string): string {
   return blocks.join("\n\n");
 }
 
-export function emailHtml(alerts: Alert[], dashboardUrl: string): string {
-  const rows = alerts
-    .map((alert) => {
+export function emailHtml(groups: AlertGroup[], dashboardUrl: string): string {
+  const rows = groups
+    .map((group) => {
+      const { alert } = group;
       const color = SEVERITY_COLORS[alert.severity] ?? "#52606d";
       const title = isHttpUrl(alert.url)
-        ? `<a href="${escapeHtml(alert.url)}" style="color:#1a1f36;">${escapeHtml(alert.title)}</a>`
-        : escapeHtml(alert.title);
+        ? `<a href="${escapeHtml(alert.url)}" style="color:#1a1f36;">${escapeHtml(headline(group))}</a>`
+        : escapeHtml(headline(group));
       return `<tr><td style="padding:14px 0;border-bottom:1px solid #e3e8ee;">
 <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:${color};">${escapeHtml(alert.severity)} &middot; ${escapeHtml(alert.category)}</div>
 <div style="font-size:16px;font-weight:600;margin:4px 0;">${title}</div>
 <div style="font-size:14px;color:#3c4257;">${escapeHtml(alert.summary)}</div>
-<div style="font-size:12px;color:#697386;margin-top:6px;">${escapeHtml(origin(alert))}</div>
+<div style="font-size:12px;color:#697386;margin-top:6px;">${escapeHtml(details(group))}</div>
 </td></tr>`;
     })
     .join("");
@@ -58,7 +65,7 @@ export async function sendEmail(
   apiKey: string,
   from: string,
   to: string[],
-  alerts: Alert[],
+  groups: AlertGroup[],
   dashboardUrl: string,
 ): Promise<void> {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -67,10 +74,10 @@ export async function sendEmail(
     body: JSON.stringify({
       personalizations: to.map((email) => ({ to: [{ email }] })),
       from: { email: from, name: "Sentinel" },
-      subject: emailSubject(alerts),
+      subject: emailSubject(groups),
       content: [
-        { type: "text/plain", value: emailText(alerts, dashboardUrl) },
-        { type: "text/html", value: emailHtml(alerts, dashboardUrl) },
+        { type: "text/plain", value: emailText(groups, dashboardUrl) },
+        { type: "text/html", value: emailHtml(groups, dashboardUrl) },
       ],
     }),
     signal: AbortSignal.timeout(15_000),

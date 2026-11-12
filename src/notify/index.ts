@@ -1,6 +1,7 @@
-import { markSent, pendingAlerts } from "../db";
+import { announcedIncidents, markSent, pendingAlerts } from "../db";
 import type { Env } from "../types";
 import { sendEmail } from "./email";
+import { groupForNotification } from "./group";
 import { needsEmail, needsSms, recipients } from "./rules";
 import { sendSms, smsBodies } from "./sms";
 
@@ -32,10 +33,12 @@ export async function notify(env: Env, now: Date): Promise<string[]> {
       const alerts = (await pendingAlerts(env.DB, "emailed_at", since)).filter((alert) =>
         needsEmail(alert, env.MIN_EMAIL_SEVERITY),
       );
-      if (alerts.length > 0) {
-        await sendEmail(env.SENDGRID_API_KEY!, env.ALERT_EMAIL_FROM, recipients(env.ALERT_EMAIL_TO), alerts, env.DASHBOARD_URL);
-        await markSent(env.DB, "emailed_at", alerts.map((alert) => alert.id), sentAt);
+      const groups = groupForNotification(alerts, await announcedIncidents(env.DB, "emailed_at", since));
+      if (groups.length > 0) {
+        await sendEmail(env.SENDGRID_API_KEY!, env.ALERT_EMAIL_FROM, recipients(env.ALERT_EMAIL_TO), groups, env.DASHBOARD_URL);
       }
+      // Further reports of an incident already announced are marked without sending.
+      await markSent(env.DB, "emailed_at", alerts.map((alert) => alert.id), sentAt);
     } catch (error) {
       errors.push(`Email: ${message(error)}`);
     }
@@ -44,8 +47,10 @@ export async function notify(env: Env, now: Date): Promise<string[]> {
   if (smsConfigured(env)) {
     try {
       const alerts = (await pendingAlerts(env.DB, "sms_at", since)).filter(needsSms);
-      if (alerts.length > 0) {
-        const bodies = smsBodies(alerts, env.DASHBOARD_URL);
+      const groups = groupForNotification(alerts, await announcedIncidents(env.DB, "sms_at", since));
+      let reached = groups.length === 0;
+      if (groups.length > 0) {
+        const bodies = smsBodies(groups, env.DASHBOARD_URL);
         const results = await Promise.allSettled(
           recipients(env.ALERT_SMS_TO).flatMap((to) =>
             bodies.map((body) =>
@@ -56,11 +61,12 @@ export async function notify(env: Env, now: Date): Promise<string[]> {
         for (const result of results) {
           if (result.status === "rejected") errors.push(`SMS: ${message(result.reason)}`);
         }
-        // Marked once anyone was reached, so a single bad number cannot make
-        // every run re-text the rest of the team.
-        if (results.some((result) => result.status === "fulfilled")) {
-          await markSent(env.DB, "sms_at", alerts.map((alert) => alert.id), sentAt);
-        }
+        // Counted as sent once anyone was reached, so a single bad number
+        // cannot make every run re-text the rest of the team.
+        reached = results.some((result) => result.status === "fulfilled");
+      }
+      if (reached) {
+        await markSent(env.DB, "sms_at", alerts.map((alert) => alert.id), sentAt);
       }
     } catch (error) {
       errors.push(`SMS: ${message(error)}`);

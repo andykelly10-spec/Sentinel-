@@ -1,8 +1,9 @@
-import { latestRun, listAlerts, openCounts, setAlertStatus } from "./db";
+import { hourlyActivity, latestRun, listAlerts, openCounts, setAlertStatus, setIncidentStatus } from "./db";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
 import { sha256Hex } from "./text";
 import { ALERT_CATEGORIES, SEVERITIES, type Alert, type Env } from "./types";
+import { WATCHLIST } from "./watchlist";
 
 const STATUSES: Array<Alert["status"]> = ["new", "acknowledged", "dismissed"];
 const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
@@ -46,14 +47,20 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       category: pick(url.searchParams.get("category"), CATEGORY_FILTERS),
       severity: pick(url.searchParams.get("severity"), SEVERITIES),
       status: pick(url.searchParams.get("status"), STATUSES),
-      limit: 200,
+      limit: 300,
     });
     return json({ alerts });
   }
 
   if (request.method === "GET" && url.pathname === "/api/status") {
-    const [lastRun, open] = await Promise.all([latestRun(env.DB), openCounts(env.DB)]);
-    return json({ lastRun, open, email: emailConfigured(env), sms: smsConfigured(env) });
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    const [lastRun, open, activity] = await Promise.all([
+      latestRun(env.DB),
+      openCounts(env.DB),
+      hourlyActivity(env.DB, dayAgo),
+    ]);
+    const sites = WATCHLIST.sites.map(({ name, address, lat, lon }) => ({ name, address, lat, lon }));
+    return json({ lastRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
   }
 
   if (request.method === "POST") {
@@ -63,6 +70,14 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
     if (url.pathname === "/api/run") {
       return json({ run: await runPipeline(env) });
+    }
+
+    if (url.pathname === "/api/incidents/status") {
+      const body = (await request.json().catch(() => null)) as { incident?: string; status?: string } | null;
+      const status = pick(body?.status ?? null, STATUSES) as Alert["status"] | undefined;
+      if (!status || !body?.incident) return json({ error: "incident and a valid status are required" }, 400);
+      const updated = await setIncidentStatus(env.DB, body.incident, status);
+      return updated ? json({ ok: true }) : json({ error: "Incident not found" }, 404);
     }
 
     const match = url.pathname.match(/^\/api\/alerts\/([0-9a-f]{32})\/status$/);

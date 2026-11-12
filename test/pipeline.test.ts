@@ -3,9 +3,12 @@ import worker from "../src/index";
 import { listAlerts } from "../src/db";
 import { runPipeline } from "../src/pipeline";
 import type { Env } from "../src/types";
-import { BING_NEWS_RSS, BLUESKY_JSON, createEnv, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW } from "./helpers";
+import { createEnv, NOW, sourceResponse } from "./helpers";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 interface Outbound {
   claude: Array<{ headers: Headers; body: any }>;
@@ -15,39 +18,49 @@ interface Outbound {
 
 // Stands in for every external service. The fake classifier labels items by
 // keyword so the test controls which items become alerts.
-function stubNetwork(options: { claude?: (body: any) => Response; sendgrid?: () => Response } = {}): Outbound {
+function stubNetwork(
+  options: { claude?: (body: any) => Response; sendgrid?: () => Response; bingLocal?: string } = {},
+): Outbound {
   const outbound: Outbound = { claude: [], emails: [], texts: [] };
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
-    const { hostname } = new URL(request.url);
-    if (hostname === "news.google.com") return new Response(GOOGLE_NEWS_RSS);
-    if (hostname === "www.bing.com") return new Response(BING_NEWS_RSS);
-    if (hostname === "api.bsky.app") return new Response(BLUESKY_JSON);
-    if (hostname === "lemmy.world") return new Response(LEMMY_JSON);
-    if (hostname === "hn.algolia.com") return new Response(HN_JSON);
-    if (hostname === "api.sendgrid.com") {
+    const url = new URL(request.url);
+    const source = sourceResponse(url, options);
+    if (source) return source;
+    if (url.hostname === "api.sendgrid.com") {
       outbound.emails.push(await request.json());
       return options.sendgrid?.() ?? new Response(null, { status: 202 });
     }
-    if (hostname === "api.twilio.com") {
+    if (url.hostname === "api.twilio.com") {
       outbound.texts.push(new URLSearchParams(await request.text()));
       return new Response("{}", { status: 201 });
     }
-    if (hostname === "api.anthropic.com") {
+    if (url.hostname === "api.anthropic.com") {
       const body = await request.json();
       outbound.claude.push({ headers: request.headers, body });
       return options.claude?.(body) ?? claudeReply(body, keywordClassifier);
     }
-    throw new Error(`unexpected request to ${hostname}`);
+    throw new Error(`unexpected request to ${url.hostname}`);
   });
   return outbound;
 }
 
-type Verdict = { category: string; severity: string; summary: string };
+type Verdict = { category: string; severity: string; summary: string; incident?: string; place?: string; lat?: number; lon?: number };
 
 function keywordClassifier(item: { title: string }): Verdict {
   if (item.title.includes("Protesters")) {
     return { category: "physical", severity: "critical", summary: "A demonstration is planned outside the premiere." };
+  }
+  if (item.title.includes("Farragut")) {
+    return {
+      category: "physical",
+      severity: "critical",
+      summary: "Shots fired near Farragut Square; the suspect is at large.",
+      incident: "Farragut Square shooting",
+      place: "Farragut Square, Washington DC",
+      lat: 38.902,
+      lon: -77.039,
+    };
   }
   if (item.title.includes("breach")) {
     return { category: "cyber", severity: "high", summary: "A group claims to have breached internal servers." };
@@ -73,10 +86,10 @@ function message(fields: object): Response {
 }
 
 function claudeReply(body: any, classify: (item: { title: string }) => Verdict | null): Response {
-  const items: Array<{ index: number; title: string }> = JSON.parse(body.messages[0].content);
+  const { items } = JSON.parse(body.messages[0].content) as { items: Array<{ index: number; title: string }> };
   const results = items.flatMap((item) => {
     const verdict = classify(item);
-    return verdict ? [{ index: item.index, ...verdict }] : [];
+    return verdict ? [{ index: item.index, incident: "", place: "", lat: null, lon: null, ...verdict }] : [];
   });
   return message({ content: [{ type: "text", text: JSON.stringify({ results }) }] });
 }
@@ -100,7 +113,7 @@ describe("runPipeline", () => {
 
     const run = await runPipeline(env, NOW);
 
-    expect(run).toMatchObject({ fetched: 8, newItems: 8, alerts: 3, errors: [] });
+    expect(run).toMatchObject({ fetched: 11, newItems: 11, alerts: 5, errors: [] });
     expect(run.sources.every((source) => source.error === null)).toBe(true);
 
     const alerts = await listAlerts(env.DB, { limit: 50 });
@@ -108,9 +121,23 @@ describe("runPipeline", () => {
       ["cyber", "high"],
       ["cyber", "low"],
       ["physical", "critical"],
+      ["physical", "critical"],
+      ["physical", "critical"],
     ]);
 
-    // One request carried all eight items, with the documented request shape.
+    // Both reports of the shooting are tied to one incident and to the nearest site.
+    const shooting = alerts.filter((a) => a.incident === "Farragut Square shooting");
+    expect(shooting.map((a) => a.source).sort()).toEqual(["bing_local", "bluesky_urgent"]);
+    expect(shooting[0]).toMatchObject({
+      place: "Farragut Square, Washington DC",
+      lat: 38.902,
+      lon: -77.039,
+      site: "CBS News Washington Bureau",
+      distanceMi: 0.4,
+    });
+    expect(alerts.find((a) => a.title.startsWith("Protesters"))).toMatchObject({ site: "", distanceMi: null, lat: null });
+
+    // One request carried all eleven items, with the documented request shape.
     expect(outbound.claude).toHaveLength(1);
     const { headers, body } = outbound.claude[0]!;
     expect(body.model).toBe("claude-opus-5-5");
@@ -121,37 +148,57 @@ describe("runPipeline", () => {
     expect(headers.get("authorization")).toBe("Bearer test-key");
     expect(body.thinking).toBeUndefined();
 
-    // The email digest covers medium and above, most severe first.
+    // The email digest covers medium and above, with one entry per incident.
     expect(outbound.emails).toHaveLength(1);
     const email = outbound.emails[0];
-    expect(email.subject).toBe("[Sentinel] 2 new alerts (1 critical)");
+    expect(email.subject).toBe("[Sentinel] 3 new alerts (2 critical)");
     expect(email.personalizations).toEqual([
       { to: [{ email: "soc@sentinel.example" }] },
       { to: [{ email: "duty@sentinel.example" }] },
     ]);
-    expect(email.content[0].value).toMatch(/^\[CRITICAL\] physical: Protesters/);
+    expect(email.content[0].value).toContain("[CRITICAL] physical: Farragut Square shooting (2 reports)");
+    expect(email.content[0].value).toContain("about 0.4 mi from CBS News Washington Bureau");
+    expect(email.content[0].value).toContain("[CRITICAL] physical: Protesters");
     expect(email.content[0].value).not.toContain("phishing wave");
 
-    // Only the critical alert is texted: high-severity cyber is email-only.
-    expect(outbound.texts).toHaveLength(1);
-    expect(outbound.texts[0]!.get("To")).toBe("+15551111111");
-    expect(outbound.texts[0]!.get("Body")).toBe(
+    // Only critical alerts are texted, once per incident: high-severity cyber is email-only.
+    expect(outbound.texts.map((text) => text.get("Body")).sort()).toEqual([
       "Sentinel CRITICAL physical: A demonstration is planned outside the premiere. https://sentinel.example",
-    );
+      "Sentinel CRITICAL physical: Shots fired near Farragut Square; the suspect is at large. (about 0.4 mi from CBS News Washington Bureau) https://sentinel.example",
+    ]);
+    expect(outbound.texts[0]!.get("To")).toBe("+15551111111");
 
     // A second run sees nothing new and sends nothing again.
     const second = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(second).toMatchObject({ fetched: 8, newItems: 0, alerts: 0 });
+    expect(second).toMatchObject({ fetched: 11, newItems: 0, alerts: 0 });
     expect(outbound.claude).toHaveLength(1);
     expect(outbound.emails).toHaveLength(1);
-    expect(outbound.texts).toHaveLength(1);
+    expect(outbound.texts).toHaveLength(2);
+  });
+
+  it("recognises a later report of a known incident and does not announce it again", async () => {
+    const env = createEnv({ ...withEmail, ...withSms });
+    stubNetwork();
+    await runPipeline(env, NOW);
+
+    const followUp = `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel>
+<item><title>Police give update on Farragut Square gunman search</title><link>https://local.example/update</link><description>Search continues.</description><pubDate>Thu, 12 Nov 2026 12:10:00 GMT</pubDate><News:Source>Local Example</News:Source></item>
+</channel></rss>`;
+    const outbound = stubNetwork({ bingLocal: followUp });
+    const run = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
+
+    expect(run).toMatchObject({ newItems: 1, alerts: 1 });
+    expect(JSON.parse(outbound.claude[0]!.body.messages[0].content).incident_names_in_use).toEqual(["Farragut Square shooting"]);
+    expect(await listAlerts(env.DB, { limit: 50 })).toHaveLength(6);
+    expect(outbound.emails).toHaveLength(0);
+    expect(outbound.texts).toHaveLength(0);
   });
 
   it("flags items the classifier skipped or refused for manual review", async () => {
     stubNetwork({ claude: (body) => claudeReply(body, (item) => (item.title.includes("breach") ? null : keywordClassifier(item))) });
     const env = createEnv();
     const run = await runPipeline(env, NOW);
-    expect(run.alerts).toBe(3);
+    expect(run.alerts).toBe(5);
     const review = await listAlerts(env.DB, { category: "unclassified", limit: 50 });
     expect(review).toHaveLength(1);
     expect(review[0]).toMatchObject({ severity: "medium", title: expect.stringContaining("breach") });
@@ -159,8 +206,8 @@ describe("runPipeline", () => {
     stubNetwork({ claude: () => message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: "" } }) });
     const refusedEnv = createEnv();
     const refused = await runPipeline(refusedEnv, NOW);
-    expect(refused.alerts).toBe(8);
-    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(8);
+    expect(refused.alerts).toBe(11);
+    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(11);
   });
 
   it("stores nothing when the classifier is unavailable, so the next run retries", async () => {
@@ -173,7 +220,7 @@ describe("runPipeline", () => {
 
     stubNetwork();
     const retried = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(retried).toMatchObject({ newItems: 8, alerts: 3, errors: [] });
+    expect(retried).toMatchObject({ newItems: 11, alerts: 5, errors: [] });
   });
 
   it("retries a failed email on the next run", async () => {
@@ -185,7 +232,7 @@ describe("runPipeline", () => {
     const outbound = stubNetwork();
     await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
     expect(outbound.emails).toHaveLength(1);
-    expect(outbound.emails[0].subject).toBe("[Sentinel] 2 new alerts (1 critical)");
+    expect(outbound.emails[0].subject).toBe("[Sentinel] 3 new alerts (2 critical)");
   });
 
   it("omits the fallback parameter for models that do not accept it", async () => {
@@ -219,12 +266,14 @@ describe("dashboard API", () => {
   });
 
   it("lists, filters and updates alerts", async () => {
+    // The status endpoint reports the last 24 hours, measured from the clock.
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW.getTime() + 60_000 });
     stubNetwork();
     const env = createEnv();
     await runPipeline(env, NOW);
 
     const all = (await (await call(env, "/api/alerts")).json()) as { alerts: any[] };
-    expect(all.alerts).toHaveLength(3);
+    expect(all.alerts).toHaveLength(5);
     const cyber = (await (await call(env, "/api/alerts?category=cyber&severity=high")).json()) as { alerts: any[] };
     expect(cyber.alerts).toHaveLength(1);
 
@@ -237,12 +286,19 @@ describe("dashboard API", () => {
     expect((await post(`/api/alerts/${id}/status`, { status: "dismissed" }, { Origin: "https://evil.example" })).status).toBe(403);
     expect((await post(`/api/alerts/${id}/status`, { status: "dismissed" })).status).toBe(200);
 
+    // Acknowledging an incident applies to every report of it.
+    expect((await post("/api/incidents/status", { incident: "No such incident", status: "acknowledged" })).status).toBe(404);
+    expect((await post("/api/incidents/status", { incident: "Farragut Square shooting", status: "acknowledged" })).status).toBe(200);
+
     const open = (await (await call(env, "/api/alerts?status=new")).json()) as { alerts: any[] };
     expect(open.alerts).toHaveLength(2);
 
     const status = (await (await call(env, "/api/status")).json()) as any;
     expect(status.open).toEqual({ critical: 1, low: 1 });
-    expect(status.lastRun.newItems).toBe(8);
+    expect(status.lastRun.newItems).toBe(11);
     expect(status).toMatchObject({ email: false, sms: false });
+    expect(status.sites).toHaveLength(5);
+    expect(status.sites[0]).toEqual({ name: "Paramount Pictures Studios", address: "5555 Melrose Ave, Los Angeles, CA", lat: 34.0838, lon: -118.3206 });
+    expect(status.activity).toEqual([{ hour: "2026-11-12T12", alerts: 5, scanned: 11 }]);
   });
 });

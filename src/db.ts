@@ -28,7 +28,7 @@ export async function findExistingIds(db: D1Database, ids: string[]): Promise<Se
   return existing;
 }
 
-const ITEM_COLUMNS = 11;
+const ITEM_COLUMNS = 17;
 
 export async function insertItems(db: D1Database, items: ClassifiedItem[], now: string): Promise<void> {
   if (items.length === 0) return;
@@ -37,7 +37,8 @@ export async function insertItems(db: D1Database, items: ClassifiedItem[], now: 
     db
       .prepare(
         `INSERT OR IGNORE INTO items
-           (id, source, url, title, snippet, author, published_at, first_seen_at, category, severity, summary)
+           (id, source, url, title, snippet, author, published_at, first_seen_at, category, severity, summary,
+            incident, place, lat, lon, site, distance_mi)
          VALUES ${group.map(() => row).join(", ")}`,
       )
       .bind(
@@ -53,6 +54,12 @@ export async function insertItems(db: D1Database, items: ClassifiedItem[], now: 
           item.category,
           item.severity,
           item.summary,
+          item.incident,
+          item.place,
+          item.lat,
+          item.lon,
+          item.site,
+          item.distanceMi,
         ]),
       ),
   );
@@ -72,6 +79,12 @@ interface ItemRow {
   severity: Alert["severity"];
   summary: string;
   status: Alert["status"];
+  incident: string;
+  place: string;
+  lat: number | null;
+  lon: number | null;
+  site: string;
+  distance_mi: number | null;
 }
 
 function toAlert(row: ItemRow): Alert {
@@ -88,6 +101,12 @@ function toAlert(row: ItemRow): Alert {
     severity: row.severity,
     summary: row.summary,
     status: row.status,
+    incident: row.incident,
+    place: row.place,
+    lat: row.lat,
+    lon: row.lon,
+    site: row.site,
+    distanceMi: row.distance_mi,
   };
 }
 
@@ -129,6 +148,57 @@ export async function setAlertStatus(db: D1Database, id: string, status: Alert["
     .bind(status, id)
     .run();
   return result.meta.changes > 0;
+}
+
+export async function setIncidentStatus(db: D1Database, incident: string, status: Alert["status"]): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE items SET status = ? WHERE incident = ? AND category != 'none'")
+    .bind(status, incident)
+    .run();
+  return result.meta.changes > 0;
+}
+
+// Names of events that recent alerts were grouped under, newest first.
+export async function recentIncidents(db: D1Database, since: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT incident FROM items
+       WHERE incident != '' AND category != 'none' AND first_seen_at >= ?
+       GROUP BY incident ORDER BY MAX(first_seen_at) DESC LIMIT 40`,
+    )
+    .bind(since)
+    .all<{ incident: string }>();
+  return results.map((row) => row.incident);
+}
+
+// For each incident already announced on a channel, the highest severity announced.
+export async function announcedIncidents(
+  db: D1Database,
+  channel: "emailed_at" | "sms_at",
+  since: string,
+): Promise<Map<string, number>> {
+  const { results } = await db
+    .prepare(
+      `SELECT incident, MAX(${SEVERITY_ORDER}) AS rank FROM items
+       WHERE incident != '' AND ${channel} IS NOT NULL AND first_seen_at >= ?
+       GROUP BY incident`,
+    )
+    .bind(since)
+    .all<{ incident: string; rank: number }>();
+  return new Map(results.map((row) => [row.incident, row.rank]));
+}
+
+export async function hourlyActivity(db: D1Database, since: string): Promise<Array<{ hour: string; alerts: number; scanned: number }>> {
+  const { results } = await db
+    .prepare(
+      `SELECT substr(first_seen_at, 1, 13) AS hour,
+              SUM(CASE WHEN category != 'none' THEN 1 ELSE 0 END) AS alerts,
+              COUNT(*) AS scanned
+       FROM items WHERE first_seen_at >= ? GROUP BY hour ORDER BY hour`,
+    )
+    .bind(since)
+    .all<{ hour: string; alerts: number; scanned: number }>();
+  return results;
 }
 
 // Alerts from the last day that have not gone out on the given channel yet.
