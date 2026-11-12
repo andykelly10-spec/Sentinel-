@@ -13,13 +13,13 @@ crons = ["*/15 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "sentinel"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "a871a59c-9d85-4193-8892-42faf06543ed"
 migrations_dir = "migrations"
 
 [vars]
 CLASSIFIER_MODEL = "claude-opus-5-5"
 MIN_EMAIL_SEVERITY = "medium"
-DASHBOARD_URL = ""
+DASHBOARD_URL = "https://sentinel.aipti.workers.dev"
 ALERT_EMAIL_FROM = ""
 ALERT_EMAIL_TO = ""
 ALERT_SMS_TO = ""
