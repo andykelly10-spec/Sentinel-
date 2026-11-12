@@ -10,6 +10,11 @@ import { ALERT_CATEGORIES, SEVERITIES, type Alert, type Env } from "./types";
 const STATUSES: Array<Alert["status"]> = ["new", "acknowledged", "dismissed"];
 const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
 
+// The page runs only its own scripts and talks only to this worker; map tiles
+// and camera stills are the one thing loaded from elsewhere.
+const CONTENT_SECURITY_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -139,7 +144,12 @@ export default {
         return json({ error: "Internal error" }, 500);
       }
     }
-    return env.ASSETS.fetch(request);
+    const asset = await env.ASSETS.fetch(request);
+    const headers = new Headers(asset.headers);
+    headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+    headers.set("Referrer-Policy", "no-referrer");
+    headers.set("X-Content-Type-Options", "nosniff");
+    return new Response(asset.body, { status: asset.status, headers });
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
