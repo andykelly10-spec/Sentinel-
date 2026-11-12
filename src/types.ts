@@ -17,6 +17,22 @@ export interface Env {
   TWILIO_FROM_NUMBER: string;
 }
 
+export interface Site {
+  id: number;
+  name: string;
+  address: string;
+  city: string;
+  country: string;
+  lat: number;
+  lon: number;
+  area: string;
+  keywords: string;
+  priority: boolean;
+  approximate: boolean;
+}
+
+export type NewSite = Omit<Site, "id">;
+
 export type SourceName =
   | "bing_news"
   | "bing_local"

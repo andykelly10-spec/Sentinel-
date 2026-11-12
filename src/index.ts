@@ -1,9 +1,11 @@
-import { hourlyActivity, latestRun, listAlerts, openCounts, setAlertStatus, setIncidentStatus } from "./db";
+import { createClient } from "./classify";
+import { hourlyActivity, latestRun, listAlerts, listSites, openCounts, saveSites, setAlertStatus, setIncidentStatus } from "./db";
+import { proxyFeed } from "./feeds";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
+import { locateSites, parseSitesCsv } from "./sites";
 import { sha256Hex } from "./text";
 import { ALERT_CATEGORIES, SEVERITIES, type Alert, type Env } from "./types";
-import { WATCHLIST } from "./watchlist";
 
 const STATUSES: Array<Alert["status"]> = ["new", "acknowledged", "dismissed"];
 const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
@@ -52,14 +54,18 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ alerts });
   }
 
+  if (request.method === "GET" && url.pathname.startsWith("/api/feeds/")) {
+    return proxyFeed(url.pathname.slice("/api/feeds/".length), url.searchParams);
+  }
+
   if (request.method === "GET" && url.pathname === "/api/status") {
     const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    const [lastRun, open, activity] = await Promise.all([
+    const [lastRun, open, activity, sites] = await Promise.all([
       latestRun(env.DB),
       openCounts(env.DB),
       hourlyActivity(env.DB, dayAgo),
+      listSites(env.DB),
     ]);
-    const sites = WATCHLIST.sites.map(({ name, address, lat, lon }) => ({ name, address, lat, lon }));
     return json({ lastRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
   }
 
@@ -70,6 +76,25 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
     if (url.pathname === "/api/run") {
       return json({ run: await runPipeline(env) });
+    }
+
+    if (url.pathname === "/api/sites/import") {
+      const body = (await request.json().catch(() => null)) as { csv?: string; replace?: boolean } | null;
+      if (typeof body?.csv !== "string") return json({ error: "csv is required" }, 400);
+      let parsed;
+      try {
+        parsed = parseSitesCsv(body.csv);
+      } catch (error) {
+        return json({ error: (error as Error).message }, 400);
+      }
+      const located = await locateSites(createClient(env.ANTHROPIC_API_KEY), env.CLASSIFIER_MODEL, parsed);
+      if (located.sites.length === 0) return json({ error: "No usable rows were found.", skipped: located.skipped }, 400);
+      await saveSites(env.DB, located.sites, body.replace !== false);
+      return json({
+        imported: located.sites.length,
+        estimated: located.sites.filter((site) => site.approximate).length,
+        skipped: located.skipped,
+      });
     }
 
     if (url.pathname === "/api/incidents/status") {

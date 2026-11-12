@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { distanceMiles, nearestSite, proximityLabel } from "../src/geo";
+import { distanceMiles, mentionsPlace, nearestSite, placeWords, priorityAreas, proximityLabel } from "../src/geo";
 import { emailHtml, emailText } from "../src/notify/email";
 import { groupForNotification } from "../src/notify/group";
 import { needsEmail, needsSms, recipients } from "../src/notify/rules";
 import { smsBodies } from "../src/notify/sms";
 import { severityRank, type Alert } from "../src/types";
-import { WATCHLIST } from "../src/watchlist";
 
 function alert(fields: Partial<Alert>): Alert {
   return {
@@ -78,7 +77,8 @@ describe("groupForNotification", () => {
 });
 
 describe("proximity", () => {
-  const bureau = WATCHLIST.sites.find((site) => site.name === "CBS News Washington Bureau")!;
+  const bureau = { name: "CBS News Washington Bureau", lat: 38.9056, lon: -77.0457 };
+  const sites = [bureau, { name: "Paramount Skydance New York", lat: 40.7577, lon: -73.986 }];
 
   it("measures distance in miles", () => {
     // Logan Circle is a little under a mile from 2020 M St NW.
@@ -87,15 +87,42 @@ describe("proximity", () => {
   });
 
   it("finds the nearest site and ignores events far from all of them", () => {
-    expect(nearestSite(38.9096, -77.0296, WATCHLIST.sites)).toEqual({ site: bureau.name, distanceMi: 0.9 });
-    expect(nearestSite(40.7614, -73.9776, WATCHLIST.sites)!.site).toBe("Paramount Skydance New York");
-    expect(nearestSite(41.8781, -87.6298, WATCHLIST.sites)).toBeNull();
-    expect(nearestSite(null, null, WATCHLIST.sites)).toBeNull();
+    expect(nearestSite(38.9096, -77.0296, sites)).toEqual({ site: bureau.name, distanceMi: 0.9 });
+    expect(nearestSite(40.7614, -73.9776, sites)!.site).toBe("Paramount Skydance New York");
+    expect(nearestSite(41.8781, -87.6298, sites)).toBeNull();
+    expect(nearestSite(null, null, sites)).toBeNull();
   });
 
   it("describes proximity for people", () => {
     expect(proximityLabel(bureau.name, 0.9)).toBe("about 0.9 mi from CBS News Washington Bureau");
     expect(proximityLabel("", null)).toBe("");
+  });
+
+  it("matches reports to sites by city and extra place words", () => {
+    const words = placeWords([
+      { city: "Washington", keywords: "DC, D.C., Logan Circle" },
+      { city: "New York", keywords: "" },
+      { city: "Washington", keywords: "" },
+    ]);
+    expect(words).toEqual(["washington", "dc", "d c", "logan circle", "new york"]);
+    expect(mentionsPlace("Active shooter reported in D.C. this morning", words)).toBe(true);
+    expect(mentionsPlace("Shots fired near Logan Circle", words)).toBe(true);
+    expect(mentionsPlace("Bomb threat at a New York school", words)).toBe(true);
+    expect(mentionsPlace("Active shooter drill in Milwaukee", words)).toBe(false);
+    // A place word must match whole words: "dc" is not found inside "abcdc".
+    expect(mentionsPlace("the abcdc concert", words)).toBe(false);
+  });
+
+  it("searches the areas of priority sites, busiest first, up to a limit", () => {
+    const list = [
+      { area: "Burbank", city: "Burbank", priority: true },
+      { area: "", city: "Atlanta", priority: true },
+      { area: "Manhattan", city: "New York", priority: true },
+      { area: "Manhattan", city: "New York", priority: true },
+      { area: "London", city: "London", priority: false },
+    ];
+    expect(priorityAreas(list, 6)).toEqual(["Manhattan", "Burbank", "Atlanta"]);
+    expect(priorityAreas(list, 1)).toEqual(["Manhattan"]);
   });
 });
 

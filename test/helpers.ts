@@ -158,16 +158,23 @@ export const BLUESKY_URGENT_JSON = JSON.stringify({
   ],
 });
 
+export const BING_URGENT_RSS = `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><title>urgent - BingNews</title>
+<item><title>Active shooter drill held at Milwaukee high school</title><link>https://mke.example/drill</link><description>Students practised lockdown procedures.</description><pubDate>Thu, 12 Nov 2026 10:00:00 GMT</pubDate><News:Source>MKE Example</News:Source></item>
+</channel></rss>`;
+
+const BRAND_QUERY = /Skydance|David Ellison|Warner Bros/;
+
 // Answers each source the way the live service would for that query.
 export function sourceResponse(url: URL, overrides: { bingLocal?: string } = {}): Response | null {
   const query = url.searchParams.get("q") ?? "";
   switch (url.hostname) {
     case "www.bing.com":
-      if (!query.includes(" OR ")) return new Response(BING_NEWS_RSS);
-      return new Response(query.includes("Washington DC") ? (overrides.bingLocal ?? BING_LOCAL_RSS) : EMPTY_RSS);
+      if (BRAND_QUERY.test(query)) return new Response(BING_NEWS_RSS);
+      if (query.includes("Washington DC")) return new Response(overrides.bingLocal ?? BING_LOCAL_RSS);
+      return new Response(query === '"active shooter"' ? BING_URGENT_RSS : EMPTY_RSS);
     case "api.bsky.app":
       if (query === '"active shooter"') return new Response(BLUESKY_URGENT_JSON);
-      return new Response(query === '"Skydance"' || query === '"David Ellison"' ? BLUESKY_JSON : '{"posts":[]}');
+      return new Response(BRAND_QUERY.test(query) ? BLUESKY_JSON : '{"posts":[]}');
     case "news.google.com":
       return new Response(GOOGLE_NEWS_RSS);
     case "lemmy.world":

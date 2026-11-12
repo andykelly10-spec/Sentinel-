@@ -7,7 +7,8 @@ import { parseHackerNews } from "../src/sources/hackerNews";
 import { parseLemmy } from "../src/sources/lemmy";
 import type { RawItem } from "../src/types";
 import { WATCHLIST } from "../src/watchlist";
-import { BING_NEWS_RSS, BLUESKY_JSON, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW, sourceResponse } from "./helpers";
+import { listSites } from "../src/db";
+import { BING_NEWS_RSS, BLUESKY_JSON, createTestDb, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW, sourceResponse } from "./helpers";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -133,7 +134,8 @@ function stubSources(requested: string[], overrides: Record<string, () => Respon
   });
 }
 
-const watch = (searchTerms: string[]) => ({ ...WATCHLIST, searchTerms });
+const SITES = await listSites(createTestDb());
+const watch = (searchTerms: string[], sites = SITES) => ({ ...WATCHLIST, searchTerms, sites });
 
 describe("collect", () => {
   it("merges sources, drops stale items and isolates a failing source", async () => {
@@ -147,7 +149,7 @@ describe("collect", () => {
       { source: "bing_local", count: 2, error: null },
       { source: "google_news", count: 0, error: "HTTP 503" },
       { source: "bluesky", count: 1, error: null },
-      // The Milwaukee post uses an urgent term but is not near any site.
+      // The Milwaukee reports use an urgent term but are not near any site.
       { source: "bluesky_urgent", count: 1, error: null },
       { source: "lemmy", count: 2, error: null },
       { source: "hackernews", count: 2, error: null },
@@ -185,14 +187,18 @@ describe("collect", () => {
     const incidents = '("active shooter" OR "shooting" OR "bomb threat" OR "explosion" OR "evacuation" OR "lockdown")';
 
     expect(queries("news.google.com")).toEqual(['"Skydance" OR "David Ellison" when:2d']);
-    // Two brand searches, then one incident search per distinct area.
+    // Brand searches, then each priority area, then urgent terms everywhere.
     expect(queries("www.bing.com")).toEqual([
       '"Skydance"',
       '"David Ellison"',
-      `"Hollywood" ${incidents}`,
-      `"Santa Monica" ${incidents}`,
       `"Manhattan" ${incidents}`,
       `"Washington DC" ${incidents}`,
+      `"Hollywood" ${incidents}`,
+      `"Santa Monica" ${incidents}`,
+      '"active shooter"',
+      '"bomb threat"',
+      '"shelter in place"',
+      '"mass shooting"',
     ]);
     expect(queries("api.bsky.app")).toEqual([
       '"Skydance"',
@@ -200,10 +206,19 @@ describe("collect", () => {
       '"active shooter"',
       '"bomb threat"',
       '"shelter in place"',
+      '"mass shooting"',
     ]);
     expect(queries("lemmy.world")).toEqual(["Skydance", "David Ellison"]);
     expect(queries("hn.algolia.com")).toHaveLength(2);
     const bluesky = requested.map((url) => new URL(url)).find((url) => url.hostname === "api.bsky.app")!;
     expect(bluesky.searchParams.get("since")).toBe("2026-11-10T12:00:00.000Z");
+  });
+
+  it("skips incident searches when there are no sites", async () => {
+    const requested: string[] = [];
+    stubSources(requested);
+    const { sources } = await collect(watch(["Skydance"], []), NOW);
+    expect(sources.find((source) => source.source === "bing_local")).toEqual({ source: "bing_local", count: 0, error: null });
+    expect(requested.filter((url) => new URL(url).hostname === "www.bing.com")).toHaveLength(1);
   });
 });

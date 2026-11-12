@@ -147,6 +147,9 @@ describe("runPipeline", () => {
     expect(headers.get("anthropic-beta")).toContain("server-side-fallback-2026-07-01");
     expect(headers.get("authorization")).toBe("Bearer test-key");
     expect(body.thinking).toBeUndefined();
+    // The site list from the database is part of the cached instructions.
+    expect(body.system[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(body.system[0].text).toContain("- CBS News Washington Bureau | Washington, US | 38.9056, -77.0457");
 
     // The email digest covers medium and above, with one entry per incident.
     expect(outbound.emails).toHaveLength(1);
@@ -298,7 +301,64 @@ describe("dashboard API", () => {
     expect(status.lastRun.newItems).toBe(11);
     expect(status).toMatchObject({ email: false, sms: false });
     expect(status.sites).toHaveLength(5);
-    expect(status.sites[0]).toEqual({ name: "Paramount Pictures Studios", address: "5555 Melrose Ave, Los Angeles, CA", lat: 34.0838, lon: -118.3206 });
+    expect(status.sites[0]).toMatchObject({ name: "CBS Broadcast Center", city: "New York", lat: 40.7689, lon: -73.9908, priority: true });
     expect(status.activity).toEqual([{ hour: "2026-11-12T12", alerts: 5, scanned: 11 }]);
+  });
+
+  it("imports a site list, estimating coordinates that are missing", async () => {
+    const outbound = stubNetwork({
+      claude: () => message({ content: [{ type: "text", text: JSON.stringify({ results: [{ index: 0, lat: 34.1561, lon: -118.3353 }, { index: 1, lat: null, lon: null }] }) }] }),
+    });
+    const env = createEnv();
+    const csv = [
+      "Site Name,Address,City,Country,Latitude,Longitude,Priority",
+      '"Techwood Campus","1050 Techwood Dr NW",Atlanta,US,33.7838,-84.3920,yes',
+      '"Burbank Lot","4000 Warner Blvd",Burbank,US,,,',
+      "Mystery Office,,Nowhereville,,,,",
+      ",,London,UK,,,",
+    ].join("\r\n");
+    const post = (body: object) =>
+      call(env, "/api/sites/import", { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+
+    expect((await post({ csv: "city\nLondon" })).status).toBe(400);
+
+    const response = await post({ csv });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      imported: 2,
+      estimated: 1,
+      skipped: ["Row 5: no name", "Mystery Office: could not work out where this is"],
+    });
+    // Only the two rows without coordinates were sent for estimation.
+    expect(JSON.parse(outbound.claude[0]!.body.messages[0].content).map((row: any) => row.name)).toEqual(["Burbank Lot", "Mystery Office"]);
+
+    const status = (await (await call(env, "/api/status")).json()) as any;
+    expect(status.sites.map((site: any) => [site.name, site.approximate, site.priority])).toEqual([
+      ["Burbank Lot", true, false],
+      ["Techwood Campus", false, true],
+    ]);
+  });
+
+  it("relays only the listed live feeds", async () => {
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      requested.push(input);
+      return input.includes("usgs") ? new Response('{"features":[]}') : new Response("down", { status: 503 });
+    });
+    const env = createEnv();
+
+    const quakes = await call(env, "/api/feeds/quakes");
+    expect(quakes.status).toBe(200);
+    expect(quakes.headers.get("Cache-Control")).toBe("private, max-age=300");
+    expect(await quakes.json()).toEqual({ features: [] });
+
+    expect((await call(env, "/api/feeds/aircraft?lat=38.9056&lon=-77.0457")).status).toBe(502);
+    expect(requested[1]).toBe("https://api.adsb.lol/v2/point/38.9056/-77.0457/40");
+
+    expect((await call(env, "/api/feeds/aircraft?lat=abc&lon=1")).status).toBe(400);
+    expect((await call(env, "/api/feeds/aircraft?lat=1/../../x&lon=1")).status).toBe(400);
+    expect((await call(env, "/api/feeds/anything-else")).status).toBe(404);
+    expect(requested).toHaveLength(2);
+    expect((await worker.fetch(new Request("https://sentinel.example/api/feeds/quakes"), env)).status).toBe(401);
   });
 });

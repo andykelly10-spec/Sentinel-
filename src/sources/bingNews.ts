@@ -1,3 +1,4 @@
+import { mentionsPlace } from "../geo";
 import { stripHtml, truncate } from "../text";
 import type { RawItem } from "../types";
 import { getText, quoted, toIso } from "./http";
@@ -33,10 +34,23 @@ export async function fetchBingNews(terms: string[]): Promise<RawItem[]> {
   return pages.flatMap((page) => parseBingNewsRss(page));
 }
 
-// One search per area for news of violent or disruptive incidents there. The
-// area must be quoted or Bing ignores the incident terms.
-export async function fetchBingLocal(areas: string[], incidentTerms: string[]): Promise<RawItem[]> {
+// News of violent or disruptive incidents near sites, found two ways: a search
+// of each priority area, and searches for urgent terms anywhere that are kept
+// only when the report mentions a place belonging to a site. The area must be
+// quoted or Bing ignores the incident terms.
+export async function fetchBingLocal(
+  areas: string[],
+  incidentTerms: string[],
+  urgentTerms: string[],
+  places: string[],
+): Promise<RawItem[]> {
   const incidents = `(${quoted(incidentTerms).join(" OR ")})`;
-  const pages = await Promise.all(quoted(areas).map((area) => getText(searchUrl(`${area} ${incidents}`))));
-  return pages.flatMap((page) => parseBingNewsRss(page, "bing_local"));
+  const [areaPages, urgentPages] = await Promise.all([
+    Promise.all(quoted(areas).map((area) => getText(searchUrl(`${area} ${incidents}`)))),
+    Promise.all(quoted(urgentTerms).map((term) => getText(searchUrl(term)))),
+  ]);
+  const nearby = urgentPages
+    .flatMap((page) => parseBingNewsRss(page, "bing_local"))
+    .filter((item) => mentionsPlace(`${item.title} ${item.snippet}`, places));
+  return [...areaPages.flatMap((page) => parseBingNewsRss(page, "bing_local")), ...nearby];
 }

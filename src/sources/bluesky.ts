@@ -1,3 +1,4 @@
+import { mentionsPlace } from "../geo";
 import { truncate } from "../text";
 import type { RawItem } from "../types";
 import { getText, quoted, toIso } from "./http";
@@ -43,11 +44,9 @@ export async function fetchBluesky(terms: string[], now: Date): Promise<RawItem[
   return (await search(quoted(terms), now)).flatMap((page) => parseBluesky(page));
 }
 
-// Posts using an urgent term anywhere, kept only when they mention a site area.
-export async function fetchBlueskyUrgent(urgentTerms: string[], areaKeywords: string[], now: Date): Promise<RawItem[]> {
+// Posts using an urgent term anywhere, kept only when they mention a place
+// belonging to a site.
+export async function fetchBlueskyUrgent(urgentTerms: string[], places: string[], now: Date): Promise<RawItem[]> {
   const posts = (await search(quoted(urgentTerms), now)).flatMap((page) => parseBluesky(page, "bluesky_urgent"));
-  return posts.filter((post) => {
-    const text = ` ${post.snippet.toLowerCase()} `;
-    return areaKeywords.some((keyword) => text.includes(keyword));
-  });
+  return posts.filter((post) => mentionsPlace(post.snippet, places));
 }

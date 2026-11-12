@@ -1,6 +1,7 @@
 import { isHttpUrl, normalizeTitle, sha256Hex } from "../text";
-import type { Candidate, RawItem, SourceName, SourceResult } from "../types";
-import type { Watchlist } from "../watchlist";
+import { placeWords, priorityAreas } from "../geo";
+import type { Candidate, RawItem, Site, SourceName, SourceResult } from "../types";
+import { MAX_AREA_SEARCHES, type Watchlist } from "../watchlist";
 import { fetchBingLocal, fetchBingNews } from "./bingNews";
 import { fetchBluesky, fetchBlueskyUrgent } from "./bluesky";
 import { fetchGoogleNews } from "./googleNews";
@@ -9,18 +10,30 @@ import { fetchLemmy } from "./lemmy";
 
 const MAX_AGE_MS = 3 * 86_400_000;
 
-const SOURCES: Array<{ name: SourceName; fetch: (watch: Watchlist, now: Date) => Promise<RawItem[]> }> = [
+interface Watch extends Watchlist {
+  sites: Site[];
+}
+
+const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Promise<RawItem[]> }> = [
   { name: "bing_news", fetch: (watch) => fetchBingNews(watch.searchTerms) },
   {
     name: "bing_local",
-    fetch: (watch) => fetchBingLocal([...new Set(watch.sites.map((site) => site.area))], watch.incidentTerms),
+    fetch: async (watch) =>
+      watch.sites.length === 0
+        ? []
+        : fetchBingLocal(
+            priorityAreas(watch.sites, MAX_AREA_SEARCHES),
+            watch.incidentTerms,
+            watch.urgentTerms,
+            placeWords(watch.sites),
+          ),
   },
   { name: "google_news", fetch: (watch) => fetchGoogleNews(watch.searchTerms) },
   { name: "bluesky", fetch: (watch, now) => fetchBluesky(watch.searchTerms, now) },
   {
     name: "bluesky_urgent",
-    fetch: (watch, now) =>
-      fetchBlueskyUrgent(watch.urgentTerms, [...new Set(watch.sites.flatMap((site) => site.areaKeywords))], now),
+    fetch: async (watch, now) =>
+      watch.sites.length === 0 ? [] : fetchBlueskyUrgent(watch.urgentTerms, placeWords(watch.sites), now),
   },
   { name: "lemmy", fetch: (watch) => fetchLemmy(watch.searchTerms) },
   { name: "hackernews", fetch: (watch, now) => fetchHackerNews(watch.searchTerms, now) },
@@ -36,7 +49,7 @@ export async function candidateId(item: RawItem): Promise<string> {
 }
 
 export async function collect(
-  watch: Watchlist,
+  watch: Watch,
   now: Date,
 ): Promise<{ candidates: Candidate[]; sources: SourceResult[] }> {
   const settled = await Promise.allSettled(SOURCES.map((source) => source.fetch(watch, now)));

@@ -1,4 +1,4 @@
-import type { Alert, ClassifiedItem, SourceResult } from "./types";
+import type { Alert, ClassifiedItem, NewSite, Site, SourceResult } from "./types";
 import { SEVERITIES } from "./types";
 
 // D1 allows at most 100 bound parameters per statement.
@@ -296,4 +296,43 @@ export async function openCounts(db: D1Database): Promise<Record<string, number>
     .prepare("SELECT severity, COUNT(*) AS n FROM items WHERE category != 'none' AND status = 'new' GROUP BY severity")
     .all<{ severity: string; n: number }>();
   return Object.fromEntries(results.map((row) => [row.severity, row.n]));
+}
+
+interface SiteRow extends Omit<Site, "priority" | "approximate"> {
+  priority: number;
+  approximate: number;
+}
+
+export async function listSites(db: D1Database): Promise<Site[]> {
+  const { results } = await db.prepare("SELECT * FROM sites ORDER BY name").all<SiteRow>();
+  return results.map((row) => ({ ...row, priority: row.priority === 1, approximate: row.approximate === 1 }));
+}
+
+const SITE_COLUMNS = 10;
+
+export async function saveSites(db: D1Database, sites: NewSite[], replace: boolean): Promise<void> {
+  const row = `(${placeholders(SITE_COLUMNS)})`;
+  const inserts = chunk(sites, Math.floor(MAX_PARAMS / SITE_COLUMNS)).map((group) =>
+    db
+      .prepare(
+        `INSERT INTO sites (name, address, city, country, lat, lon, area, keywords, priority, approximate)
+         VALUES ${group.map(() => row).join(", ")}`,
+      )
+      .bind(
+        ...group.flatMap((site) => [
+          site.name,
+          site.address,
+          site.city,
+          site.country,
+          site.lat,
+          site.lon,
+          site.area,
+          site.keywords,
+          site.priority ? 1 : 0,
+          site.approximate ? 1 : 0,
+        ]),
+      ),
+  );
+  // One batch, so a failed import cannot leave the list half replaced.
+  await db.batch([...(replace ? [db.prepare("DELETE FROM sites")] : []), ...inserts]);
 }
