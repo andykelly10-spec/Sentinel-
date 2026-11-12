@@ -17,7 +17,7 @@ export interface Env {
   TWILIO_FROM_NUMBER: string;
 }
 
-export type SourceName = "google_news" | "gdelt" | "reddit" | "hackernews";
+export type SourceName = "bing_news" | "google_news" | "bluesky" | "lemmy" | "hackernews";
 
 export interface RawItem {
   source: SourceName;

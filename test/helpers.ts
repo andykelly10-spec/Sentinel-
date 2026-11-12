@@ -56,42 +56,60 @@ export const GOOGLE_NEWS_RSS = `<?xml version="1.0" encoding="UTF-8" standalone=
 <item><title><![CDATA[Old story about Skydance from last month - Archive Post]]></title><link>https://news.google.com/rss/articles/CCC333?oc=5</link><pubDate>Mon, 12 Oct 2026 10:00:00 GMT</pubDate><source url="https://archive.example">Archive Post</source></item>
 </channel></rss>`;
 
-export const GDELT_JSON = JSON.stringify({
-  articles: [
+export const BING_NEWS_RSS = `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0" xmlns:News="https://www.bing.com/news/search?q=%22Skydance%22&amp;format=rss"><channel><title>&quot;Skydance&quot; - BingNews</title><link>https://www.bing.com/news/search?q=%22Skydance%22&amp;format=rss</link>
+<item><title>Protesters plan demonstration outside Skydance Animation premiere</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=6af5e89bc5e14c0fa079a4cc1058546e&amp;url=https%3a%2f%2fwww.syndicated.example%2fprotest-premiere%3fa%3d1%26b%3d2&amp;c=5457326848369086104&amp;mkt=en-us</link><description>Organisers say they will gather outside Saturday&#39;s premiere &amp; have published the venue address.</description><pubDate>Thu, 12 Nov 2026 10:15:00 GMT</pubDate><News:Source>Syndicated Wire</News:Source><News:Image>http://www.bing.com/th?id=ONUT.x&amp;pid=News</News:Image></item>
+<item><title>Hacking group claims breach of Skydance Games internal servers</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=aaaa&amp;url=https%3a%2f%2fsecurity.example%2fskydance-breach-claim&amp;c=1&amp;mkt=en-us</link><description>The group says it holds source code.</description><pubDate>Thu, 12 Nov 2026 08:00:00 GMT</pubDate><News:Source>Security Example</News:Source></item>
+</channel></rss>`;
+
+export const BLUESKY_JSON = JSON.stringify({
+  posts: [
     {
-      url: "https://www.syndicated.example/protest-premiere",
-      title: "Protesters plan demonstration outside Skydance Animation premiere",
-      seendate: "20261112T101500Z",
-      domain: "syndicated.example",
-      language: "English",
-    },
-    {
-      url: "https://security.example/skydance-breach-claim",
-      title: "Hacking group claims breach of Skydance Games internal servers",
-      seendate: "20261112T080000Z",
-      domain: "security.example",
-      language: "English",
+      uri: "at://did:plc:abc123/app.bsky.feed.post/3n24sblfsas26",
+      cid: "bafyexample",
+      author: { did: "did:plc:abc123", handle: "filmfan.bsky.social", displayName: "Film Fan" },
+      record: {
+        $type: "app.bsky.feed.post",
+        createdAt: "2026-11-12T11:35:18.901Z",
+        text: "Just saw the new Skydance trailer.\n\nLooks great!",
+      },
+      indexedAt: "2026-11-12T11:35:20.000Z",
     },
   ],
+  cursor: "1",
+  hitsTotal: 1,
 });
 
-export const REDDIT_JSON = JSON.stringify({
-  kind: "Listing",
-  data: {
-    children: [
-      {
-        kind: "t3",
-        data: {
-          title: "Skydance trailer discussion",
-          selftext: "What did   everyone think?\n\nI liked it.",
-          permalink: "/r/movies/comments/abc123/skydance_trailer_discussion/",
-          subreddit_name_prefixed: "r/movies",
-          author: "filmfan",
-          created_utc: 1794484800,
-        },
+export const LEMMY_JSON = JSON.stringify({
+  type_: "All",
+  comments: [
+    {
+      comment: {
+        id: 26823342,
+        content: "Another acquisition for the Skydance conglomerate. What could go wrong?",
+        published: "2026-11-12T07:09:38.369641Z",
+        ap_id: "https://lemmus.example/comment/20675265",
       },
-    ],
-  },
+      creator: { id: 1, name: "thor_whale" },
+      post: { id: 54307121, name: "Studio merger talks reported" },
+      community: { id: 2478, name: "technology" },
+    },
+  ],
+  posts: [
+    {
+      post: {
+        id: 54327583,
+        name: "Skydance sets release date for its next animated feature",
+        url: "https://trade.example/release-date",
+        body: null,
+        ap_id: "https://lemmy.example/post/78350329",
+        published: "2026-11-12T10:21:30.374540Z",
+      },
+      creator: { id: 2, name: "grainne" },
+      community: { id: 3, name: "tvmovies" },
+    },
+  ],
+  communities: [],
+  users: [],
 });
 
 export const HN_JSON = JSON.stringify({

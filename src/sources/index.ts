@@ -1,16 +1,18 @@
 import { isHttpUrl, normalizeTitle, sha256Hex } from "../text";
 import type { Candidate, RawItem, SourceName, SourceResult } from "../types";
-import { fetchGdelt } from "./gdelt";
+import { fetchBingNews } from "./bingNews";
+import { fetchBluesky } from "./bluesky";
 import { fetchGoogleNews } from "./googleNews";
 import { fetchHackerNews } from "./hackerNews";
-import { fetchReddit } from "./reddit";
+import { fetchLemmy } from "./lemmy";
 
 const MAX_AGE_MS = 3 * 86_400_000;
 
 const SOURCES: Array<{ name: SourceName; fetch: (terms: string[], now: Date) => Promise<RawItem[]> }> = [
+  { name: "bing_news", fetch: fetchBingNews },
   { name: "google_news", fetch: fetchGoogleNews },
-  { name: "gdelt", fetch: fetchGdelt },
-  { name: "reddit", fetch: fetchReddit },
+  { name: "bluesky", fetch: fetchBluesky },
+  { name: "lemmy", fetch: fetchLemmy },
   { name: "hackernews", fetch: fetchHackerNews },
 ];
 
@@ -18,7 +20,7 @@ const SOURCES: Array<{ name: SourceName; fetch: (terms: string[], now: Date) => 
 // distinctive headline is their identity. Social posts are identified by URL.
 export async function candidateId(item: RawItem): Promise<string> {
   const title = normalizeTitle(item.title);
-  const isNews = item.source === "google_news" || item.source === "gdelt";
+  const isNews = item.source === "google_news" || item.source === "bing_news";
   const key = isNews && title.length >= 25 ? `t:${title}` : `u:${item.url}`;
   return (await sha256Hex(key)).slice(0, 32);
 }

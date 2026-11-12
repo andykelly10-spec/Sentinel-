@@ -3,7 +3,7 @@ import worker from "../src/index";
 import { listAlerts } from "../src/db";
 import { runPipeline } from "../src/pipeline";
 import type { Env } from "../src/types";
-import { createEnv, GDELT_JSON, GOOGLE_NEWS_RSS, HN_JSON, NOW } from "./helpers";
+import { BING_NEWS_RSS, BLUESKY_JSON, createEnv, GOOGLE_NEWS_RSS, HN_JSON, LEMMY_JSON, NOW } from "./helpers";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,8 +21,9 @@ function stubNetwork(options: { claude?: (body: any) => Response; sendgrid?: () 
     const request = new Request(input, init);
     const { hostname } = new URL(request.url);
     if (hostname === "news.google.com") return new Response(GOOGLE_NEWS_RSS);
-    if (hostname === "api.gdeltproject.org") return new Response(GDELT_JSON);
-    if (hostname === "www.reddit.com") return new Response("blocked", { status: 403 });
+    if (hostname === "www.bing.com") return new Response(BING_NEWS_RSS);
+    if (hostname === "api.bsky.app") return new Response(BLUESKY_JSON);
+    if (hostname === "lemmy.world") return new Response(LEMMY_JSON);
     if (hostname === "hn.algolia.com") return new Response(HN_JSON);
     if (hostname === "api.sendgrid.com") {
       outbound.emails.push(await request.json());
@@ -51,7 +52,7 @@ function keywordClassifier(item: { title: string }): Verdict {
   if (item.title.includes("breach")) {
     return { category: "cyber", severity: "high", summary: "A group claims to have breached internal servers." };
   }
-  if (item.title.includes("Comment on")) {
+  if (item.title.includes("Ask HN")) {
     return { category: "cyber", severity: "low", summary: "A commenter mentions a past phishing wave." };
   }
   return { category: "none", severity: "low", summary: "" };
@@ -99,8 +100,8 @@ describe("runPipeline", () => {
 
     const run = await runPipeline(env, NOW);
 
-    expect(run).toMatchObject({ fetched: 5, newItems: 5, alerts: 3, errors: [] });
-    expect(run.sources.find((s) => s.source === "reddit")).toEqual({ source: "reddit", count: 0, error: "HTTP 403" });
+    expect(run).toMatchObject({ fetched: 8, newItems: 8, alerts: 3, errors: [] });
+    expect(run.sources.every((source) => source.error === null)).toBe(true);
 
     const alerts = await listAlerts(env.DB, { limit: 50 });
     expect(alerts.map((a) => [a.category, a.severity]).sort()).toEqual([
@@ -109,7 +110,7 @@ describe("runPipeline", () => {
       ["physical", "critical"],
     ]);
 
-    // One request carried all five items, with the documented request shape.
+    // One request carried all eight items, with the documented request shape.
     expect(outbound.claude).toHaveLength(1);
     const { headers, body } = outbound.claude[0]!;
     expect(body.model).toBe("claude-opus-5-5");
@@ -140,7 +141,7 @@ describe("runPipeline", () => {
 
     // A second run sees nothing new and sends nothing again.
     const second = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(second).toMatchObject({ fetched: 5, newItems: 0, alerts: 0 });
+    expect(second).toMatchObject({ fetched: 8, newItems: 0, alerts: 0 });
     expect(outbound.claude).toHaveLength(1);
     expect(outbound.emails).toHaveLength(1);
     expect(outbound.texts).toHaveLength(1);
@@ -158,8 +159,8 @@ describe("runPipeline", () => {
     stubNetwork({ claude: () => message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: "" } }) });
     const refusedEnv = createEnv();
     const refused = await runPipeline(refusedEnv, NOW);
-    expect(refused.alerts).toBe(5);
-    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(5);
+    expect(refused.alerts).toBe(8);
+    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(8);
   });
 
   it("stores nothing when the classifier is unavailable, so the next run retries", async () => {
@@ -172,7 +173,7 @@ describe("runPipeline", () => {
 
     stubNetwork();
     const retried = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(retried).toMatchObject({ newItems: 5, alerts: 3, errors: [] });
+    expect(retried).toMatchObject({ newItems: 8, alerts: 3, errors: [] });
   });
 
   it("retries a failed email on the next run", async () => {
@@ -241,7 +242,7 @@ describe("dashboard API", () => {
 
     const status = (await (await call(env, "/api/status")).json()) as any;
     expect(status.open).toEqual({ critical: 1, low: 1 });
-    expect(status.lastRun.newItems).toBe(5);
+    expect(status.lastRun.newItems).toBe(8);
     expect(status).toMatchObject({ email: false, sms: false });
   });
 });

@@ -7,7 +7,7 @@ import type { Alert } from "../src/types";
 function alert(fields: Partial<Alert>): Alert {
   return {
     id: "a".repeat(32),
-    source: "gdelt",
+    source: "bing_news",
     url: "https://news.example/story",
     title: "Title",
     snippet: "",
