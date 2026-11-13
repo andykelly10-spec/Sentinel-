@@ -104,7 +104,8 @@ a { color: var(--cyan); }
 .mark { width: 34px; height: 34px; filter: drop-shadow(0 0 6px rgba(227, 171, 53, 0.6)); }
 h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: 0.42em; line-height: 1.1; }
 .sub { font-size: 9.5px; letter-spacing: 0.3em; opacity: 0.85; }
-.readouts { flex: 1; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: var(--muted); min-width: 0; }
+/* One line only: the bar has a fixed height, so wrapped readouts would spill off the screen. */
+.readouts { flex: 1; display: flex; justify-content: flex-end; flex-wrap: nowrap; gap: 18px; font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; white-space: nowrap; }
 .readouts b { font-weight: 500; color: var(--cyan); }
 .readouts .ok b { color: var(--green); }
 .readouts .warn b { color: var(--medium); }
@@ -255,6 +256,17 @@ code { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); }
 
 @media (prefers-reduced-motion: reduce) {
   .ticker-track, .incident-marker.live::after { animation: none; }
+}
+
+@media (max-width: 1500px) { .readouts .drop-1 { display: none; } }
+@media (max-width: 1350px) { .readouts .drop-2 { display: none; } }
+@media (max-width: 1200px) {
+  .readouts .drop-3, .sub { display: none; }
+  h1 { letter-spacing: 0.3em; }
+}
+@media (max-width: 1080px) {
+  .readouts .drop-4, .threat-label { display: none; }
+  .top { gap: 14px; }
 }
 
 @media (max-width: 860px) {

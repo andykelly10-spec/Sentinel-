@@ -780,14 +780,16 @@ function renderReadouts() {
   const failing = (run?.sources ?? []).filter((source) => source.error).length;
   const active = LAYERS.filter((layer) => layer.active);
   const entities = active.reduce((sum, layer) => sum + (layer.count ?? 0), 0);
-  const item = (label, value, tone) => el("span", { class: tone ?? false }, `${label} `, el("b", {}, value));
+  // `drop` names the readouts the stylesheet hides first on narrower screens.
+  const item = (label, value, tone, drop) =>
+    el("span", { class: [tone, drop && `drop-${drop}`].filter(Boolean).join(" ") || false }, `${label} `, el("b", {}, value));
   document.getElementById("readouts").replaceChildren(
     item("Zulu", `${new Date().toISOString().slice(11, 19)}Z`),
     item("Status", stale ? "Stale" : failing ? "Degraded" : "Live", stale || failing ? "warn" : "ok"),
-    item("Layers", String(active.length)),
-    item("Entities", entities.toLocaleString()),
-    item("Sites", String(info?.sites?.length ?? 0)),
-    item("Checked", run ? ago(run.finishedAt) : "never"),
+    item("Layers", String(active.length), null, 1),
+    item("Entities", entities.toLocaleString(), null, 2),
+    item("Sites", String(info?.sites?.length ?? 0), null, 3),
+    item("Checked", run ? ago(run.finishedAt) : "never", null, 4),
   );
   const online = document.getElementById("online");
   online.textContent = stale ? "Stale" : "Online";
@@ -798,7 +800,7 @@ function renderStatus() {
   const info = state.info;
   const top = SEVERITIES.find((severity) => (info.open[severity] ?? 0) > 0);
   const threat = document.getElementById("threat");
-  threat.textContent = `Threat level: ${top ? THREAT_NAMES[top] : "Clear"}`;
+  threat.replaceChildren(el("span", { class: "threat-label" }, "Threat level: "), top ? THREAT_NAMES[top] : "Clear");
   threat.className = top ? `threat sev-${top}` : "threat";
 
   document.getElementById("counts").replaceChildren(
