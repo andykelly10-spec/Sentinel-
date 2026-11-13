@@ -275,6 +275,9 @@ export async function recordRun(db: D1Database, run: RunRecord): Promise<void> {
     db
       .prepare("DELETE FROM items WHERE category = 'none' AND first_seen_at < ?")
       .bind(new Date(finished - NON_ALERT_RETENTION_MS).toISOString()),
+    db
+      .prepare("DELETE FROM settings WHERE key LIKE 'login_failures:%' AND json_extract(value, '$.first') < ?")
+      .bind(finished - 86_400_000),
   ]);
 }
 

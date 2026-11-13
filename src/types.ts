@@ -44,6 +44,7 @@ export type SourceName =
   | "bluesky_urgent"
   | "lemmy"
   | "hackernews"
+  | "rss"
   | "nws"
   | "usgs"
   | "wildfire"

@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { OUTLETS } from "../src/sources/outlets";
 import type { Env } from "../src/types";
 
 // A D1 stand-in backed by SQLite, loaded with the real migrations and
@@ -165,10 +166,20 @@ export const BING_URGENT_RSS = `<?xml version="1.0" encoding="utf-8" ?><rss vers
 <item><title>Active shooter drill held at Milwaukee high school</title><link>https://mke.example/drill</link><description>Students practised lockdown procedures.</description><pubDate>Thu, 12 Nov 2026 10:00:00 GMT</pubDate><News:Source>MKE Example</News:Source></item>
 </channel></rss>`;
 
+export const OUTLET_RSS = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Outlet</title>
+<item><title><![CDATA[Paramount staff told to work from home after a threatening letter]]></title><link>https://outlet.example/paramount-letter</link><description><![CDATA[<p>Security was increased at the studio lot.</p>]]></description><pubDate>Thu, 12 Nov 2026 10:30:00 GMT</pubDate></item>
+<item><title>Explosion reported at a warehouse in Washington</title><link>https://outlet.example/warehouse</link><description>Firefighters responded this morning.</description><pubDate>Thu, 12 Nov 2026 10:00:00 GMT</pubDate></item>
+<item><title>Explosion at a factory in Lyon</title><link>https://outlet.example/lyon</link><description>No injuries were reported.</description><pubDate>Thu, 12 Nov 2026 09:00:00 GMT</pubDate></item>
+<item><title>Weekend football results</title><link>https://outlet.example/football</link><description>Scores from around the league.</description><pubDate>Thu, 12 Nov 2026 08:00:00 GMT</pubDate></item>
+</channel></rss>`;
+
+const OUTLET_URLS = new Set(OUTLETS.map((outlet) => outlet.url));
+
 const BRAND_QUERY = /Skydance|David Ellison|Warner Bros/;
 
 // Answers each source the way the live service would for that query.
 export function sourceResponse(url: URL, overrides: { bingLocal?: string } = {}): Response | null {
+  if (OUTLET_URLS.has(url.href)) return new Response(OUTLET_RSS);
   const query = url.searchParams.get("q") ?? "";
   switch (url.hostname) {
     case "www.bing.com":

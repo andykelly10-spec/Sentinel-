@@ -27,6 +27,17 @@ export const WATCHLIST = {
   // Searched in news alongside each priority site's area.
   incidentTerms: ["active shooter", "shooting", "bomb threat", "explosion", "evacuation", "lockdown"],
 
+  // Besides searchTerms, stories from the news outlet feeds that name one of
+  // these are passed to the classifier.
+  brandKeywords: ["Paramount", "Warner Bros", "HBO", "CBS News", "Ellison"],
+
+  // Words that mark a news story as a possible incident.
+  storyIncidentTerms: [
+    "shooting", "shooter", "gunman", "gunfire", "shot", "stabbing", "bomb", "explosion", "blast", "evacuation",
+    "evacuated", "lockdown", "shelter in place", "hostage", "terror", "attack", "protest", "riot", "unrest", "fire",
+    "suspicious package", "police standoff", "barricaded",
+  ],
+
   // Certificate logs are searched for new domains containing these names.
   // "strict" names are ordinary words too, so they only count next to a
   // phishing word such as "login".

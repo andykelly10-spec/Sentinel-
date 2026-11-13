@@ -7,11 +7,14 @@ import { fetchBluesky, fetchBlueskyUrgent } from "./bluesky";
 import { fetchGoogleNews } from "./googleNews";
 import { fetchHackerNews } from "./hackerNews";
 import { fetchLemmy } from "./lemmy";
+import { fetchOutletStories, type Outlet } from "./outlets";
 
 const MAX_AGE_MS = 3 * 86_400_000;
 
 interface Watch extends Watchlist {
   sites: Site[];
+  // The news outlets to read this run; they are read a few at a time.
+  outlets?: Outlet[];
 }
 
 const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Promise<RawItem[]> }> = [
@@ -35,6 +38,15 @@ const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Pro
     fetch: async (watch, now) =>
       watch.sites.length === 0 ? [] : fetchBlueskyUrgent(watch.urgentTerms, placeWords(watch.sites), now),
   },
+  {
+    name: "rss",
+    fetch: async (watch) =>
+      fetchOutletStories(watch.outlets ?? [], {
+        brandTerms: [...watch.searchTerms, ...watch.brandKeywords],
+        incidentTerms: watch.storyIncidentTerms,
+        places: placeWords(watch.sites),
+      }),
+  },
   { name: "lemmy", fetch: (watch) => fetchLemmy(watch.searchTerms) },
   { name: "hackernews", fetch: (watch, now) => fetchHackerNews(watch.searchTerms, now) },
 ];
@@ -43,7 +55,7 @@ const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Pro
 // distinctive headline is their identity. Social posts are identified by URL.
 export async function candidateId(item: RawItem): Promise<string> {
   const title = normalizeTitle(item.title);
-  const isNews = item.source === "google_news" || item.source === "bing_news" || item.source === "bing_local";
+  const isNews = ["google_news", "bing_news", "bing_local", "rss"].includes(item.source);
   const key = isNews && title.length >= 25 ? `t:${title}` : `u:${item.url}`;
   return (await sha256Hex(key)).slice(0, 32);
 }

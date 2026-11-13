@@ -1,13 +1,37 @@
+import {
+  basicMatches,
+  clearedCookie,
+  createSession,
+  FAILURE_WINDOW_MS,
+  loginPage,
+  MAX_FAILURES,
+  passwordMatches,
+  readCookie,
+  sessionCookie,
+  validSession,
+} from "./auth";
 import { writeBrief } from "./brief";
 import { createClient } from "./classify";
-import { hourlyActivity, latestBrief, latestRun, listAlerts, listSites, openCounts, saveSites, setAlertStatus, setIncidentStatus } from "./db";
+import {
+  getSetting,
+  hourlyActivity,
+  latestBrief,
+  latestRun,
+  listAlerts,
+  listSites,
+  openCounts,
+  saveSites,
+  setAlertStatus,
+  setIncidentStatus,
+  setSetting,
+} from "./db";
 import { proxyFeed } from "./feeds";
+import { latestHeadlines } from "./headlines";
 import { runHazards } from "./hazards";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
 import { BRIEF_CRON, HAZARD_CRON, HOURLY_MINUTE } from "./schedule";
 import { locateSites, parseSitesCsv } from "./sites";
-import { sha256Hex } from "./text";
 import { ALERT_CATEGORIES, ALERT_STATUSES, SEVERITIES, type AlertStatus, type Env } from "./types";
 
 const STATUSES: readonly string[] = ALERT_STATUSES;
@@ -15,37 +39,16 @@ const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
 
 // The page runs only its own scripts. It talks to this worker, plus Transport
 // for London's camera list, which refuses requests relayed from Cloudflare.
-// Map tiles and camera stills are the only other things loaded from elsewhere.
+// Map tiles and camera stills are loaded from elsewhere, and the live TV wall
+// embeds YouTube players.
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.tfl.gov.uk; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.tfl.gov.uk; frame-src https://www.youtube.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-}
-
-async function passwordMatches(supplied: string, expected: string): Promise<boolean> {
-  // Comparing digests keeps the comparison time independent of the password.
-  const [a, b] = await Promise.all([sha256Hex(supplied), sha256Hex(expected)]);
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-async function authorized(request: Request, password: string): Promise<boolean> {
-  const header = request.headers.get("Authorization") ?? "";
-  if (!header.startsWith("Basic ")) return false;
-  let decoded: string;
-  try {
-    decoded = atob(header.slice(6));
-  } catch {
-    return false;
-  }
-  const separator = decoded.indexOf(":");
-  if (separator === -1) return false;
-  return passwordMatches(decoded.slice(separator + 1), password);
 }
 
 function pick(value: string | null, allowed: readonly string[]): string | undefined {
@@ -79,14 +82,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ lastRun, lastHazardRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
   }
 
+  if (request.method === "GET" && url.pathname === "/api/headlines") {
+    return json(await latestHeadlines(env.DB));
+  }
+
   if (request.method === "GET" && url.pathname === "/api/brief") {
     return json({ brief: await latestBrief(env.DB) });
   }
 
   if (request.method === "POST") {
-    // Browsers attach saved Basic credentials to cross-site requests.
-    const origin = request.headers.get("Origin");
-    if (origin && origin !== url.origin) return json({ error: "Cross-origin request refused" }, 403);
+    if (!sameOrigin(request, url)) return json({ error: "Cross-origin request refused" }, 403);
 
     if (url.pathname === "/api/run") {
       return json({ run: await runPipeline(env) });
@@ -145,19 +150,60 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   return json({ error: "Not found" }, 404);
 }
 
+function sameOrigin(request: Request, url: URL): boolean {
+  // Browsers attach cookies to some cross-site requests; refuse those that change things.
+  const origin = request.headers.get("Origin");
+  return !origin || origin === url.origin;
+}
+
+async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!sameOrigin(request, url)) return loginPage("Please sign in from the Sentinel page.", 403);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const key = `login_failures:${ip}`;
+  const now = Date.now();
+  const stored = JSON.parse((await getSetting(env.DB, key)) ?? "null") as { count: number; first: number } | null;
+  const failures = stored && now - stored.first < FAILURE_WINDOW_MS ? stored : { count: 0, first: now };
+  if (failures.count >= MAX_FAILURES) {
+    const minutes = Math.ceil((failures.first + FAILURE_WINDOW_MS - now) / 60_000);
+    return loginPage(`Too many wrong passwords. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`, 429);
+  }
+
+  const form = await request.formData().catch(() => null);
+  const supplied = form?.get("password");
+  if (typeof supplied === "string" && (await passwordMatches(supplied, env.DASHBOARD_PASSWORD!))) {
+    if (stored) await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(key).run();
+    return new Response(null, {
+      status: 303,
+      headers: { Location: "/", "Set-Cookie": sessionCookie(await createSession(env.DASHBOARD_PASSWORD!, now)), "Cache-Control": "no-store" },
+    });
+  }
+  await setSetting(env.DB, key, JSON.stringify({ count: failures.count + 1, first: failures.first }));
+  return loginPage("That password is not right.", 401);
+}
+
+async function signedIn(request: Request, password: string): Promise<boolean> {
+  const token = readCookie(request);
+  if (token && (await validSession(token, password, Date.now()))) return true;
+  return basicMatches(request, password);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (!env.DASHBOARD_PASSWORD) {
       return new Response("Sentinel is not configured: set the DASHBOARD_PASSWORD secret.", { status: 503 });
     }
-    if (!(await authorized(request, env.DASHBOARD_PASSWORD))) {
-      return new Response("Authentication required", {
-        status: 401,
-        headers: { "WWW-Authenticate": 'Basic realm="Sentinel", charset="UTF-8"' },
-      });
+    const url = new URL(request.url);
+
+    if (url.pathname === "/login" && request.method === "POST") return handleLogin(request, env, url);
+    if (url.pathname === "/logout" && request.method === "POST") {
+      if (!sameOrigin(request, url)) return json({ error: "Cross-origin request refused" }, 403);
+      return new Response(null, { status: 303, headers: { Location: "/", "Set-Cookie": clearedCookie() } });
     }
 
-    const url = new URL(request.url);
+    if (!(await signedIn(request, env.DASHBOARD_PASSWORD))) {
+      return url.pathname.startsWith("/api/") ? json({ error: "Sign in required" }, 401) : loginPage(null, 401);
+    }
+
     if (url.pathname.startsWith("/api/")) {
       try {
         return await handleApi(request, env, url);
@@ -169,7 +215,9 @@ export default {
     const asset = await env.ASSETS.fetch(request);
     const headers = new Headers(asset.headers);
     headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
-    headers.set("Referrer-Policy", "no-referrer");
+    // "same-origin" so the browser sends this page's Origin on its own POSTs
+    // (no-referrer would send "Origin: null" and fail the same-origin check).
+    headers.set("Referrer-Policy", "same-origin");
     headers.set("X-Content-Type-Options", "nosniff");
     return new Response(asset.body, { status: asset.status, headers });
   },

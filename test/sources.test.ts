@@ -151,6 +151,8 @@ describe("collect", () => {
       { source: "bluesky", count: 1, error: null },
       // The Milwaukee reports use an urgent term but are not near any site.
       { source: "bluesky_urgent", count: 1, error: null },
+      // No outlets were scheduled for this run.
+      { source: "rss", count: 0, error: null },
       { source: "lemmy", count: 2, error: null },
       { source: "hackernews", count: 2, error: null },
     ]);

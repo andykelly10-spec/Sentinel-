@@ -60,6 +60,19 @@
 </aside>
 <button class="pill reopen" id="alerts-open" hidden>Alerts</button>
 
+<section class="panel newsroom" id="newsroom" hidden aria-label="News">
+  <div class="panel-head">
+    <div class="tabs" role="group" aria-label="News view">
+      <button data-news-tab="tv" aria-pressed="true">Live TV</button>
+      <button data-news-tab="headlines" aria-pressed="false">Headlines</button>
+    </div>
+    <button class="icon-btn" id="newsroom-close" aria-label="Close news">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="newsroom-body" id="newsroom-body"></div>
+</section>
+
 <aside class="panel drawer" id="drawer" hidden aria-label="Details">
   <div class="panel-head">
     <h2 id="drawer-title"></h2>

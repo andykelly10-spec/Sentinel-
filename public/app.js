@@ -20,6 +20,7 @@ const SOURCE_NAMES = {
   bluesky_urgent: "Bluesky (urgent terms)",
   lemmy: "Lemmy",
   hackernews: "Hacker News",
+  rss: "News outlets (24 feeds)",
   nws: "Weather warnings (National Weather Service)",
   usgs: "Earthquakes (USGS)",
   wildfire: "US wildfires (National Interagency Fire Center)",
@@ -68,6 +69,11 @@ function svgIcon(path) {
 
 async function api(path, options) {
   const response = await fetch(path, options);
+  if (response.status === 401) {
+    // The session has ended; reloading shows the sign-in page.
+    location.reload();
+    throw new Error("Signed out");
+  }
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.error ?? `Request failed (${response.status})`);
   return body;
@@ -651,9 +657,11 @@ function renderRail() {
       ),
     ),
     el("div", { class: "spacer" }),
+    railButton("News: live TV and headlines", "M3 7h18v12H3zM8 3l4 4 4-4M7 11h6M7 15h4", { id: "open-news", onclick: () => openNewsroom() }),
     railButton("Morning brief", "M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6", { id: "open-brief", onclick: openBrief }),
     railButton("Sites: view and import your site list", "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01", { id: "open-sites", onclick: openSites }),
     railButton("Feeds: what is connected and what else can be", "M9 2v6M15 2v6M6 8h12v4a6 6 0 01-12 0zM12 18v4", { id: "open-feeds", onclick: openFeeds }),
+    railButton("Sign out", "M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10", { id: "sign-out", onclick: signOut }),
   );
   railTip.hidden = true;
   if (focused) document.querySelector(`[data-layer="${focused}"]`)?.focus();
@@ -870,10 +878,140 @@ function renderTicker() {
 // ---------- drawers ----------
 
 function openDrawer(title, ...content) {
+  closeNewsroom();
   document.getElementById("drawer-title").textContent = title;
   document.getElementById("drawer-body").replaceChildren(...content);
   document.getElementById("drawer").hidden = false;
   document.getElementById("drawer-close").focus();
+}
+
+async function signOut() {
+  await fetch("/logout", { method: "POST" }).catch(() => {});
+  location.href = "/";
+}
+
+// ---------- news: live TV and headlines ----------
+
+const CHANNELS = [
+  { id: "sky", name: "Sky News", channel: "UCoMdktPbSTixAyNGwb-UYkQ" },
+  { id: "cbs", name: "CBS News 24/7", channel: "UC8p1vwvWtl6T73JiExfWs1g" },
+  { id: "aje", name: "Al Jazeera English", channel: "UCNye-wNBqNL5ZzHSJj3l8Bg" },
+  { id: "abc", name: "ABC News Live", channel: "UCBi2mrWuNuyYy4gbM6fU18Q" },
+  { id: "nbc", name: "NBC News NOW", channel: "UCeY0bbntWzzVIaj2z3QigXg" },
+  { id: "dw", name: "DW News", channel: "UCknLrEdhRCp1aegoMqRaCZg" },
+  { id: "france24", name: "France 24 English", channel: "UCQfwfsi5VrQ8yKZ-UWmAEFg" },
+  { id: "euronews", name: "Euronews", channel: "UCSrZ3UV4jOidv8ppoVuvW9Q" },
+  { id: "bloomberg", name: "Bloomberg TV", channel: "UCIALMKvObZNtJ6AmdCLP7Lg" },
+];
+const HEADLINE_FILTERS = ["All", "World", "US", "UK", "Los Angeles", "New York", "Washington DC", "London"];
+const newsroom = { tab: "tv", filter: "All", timer: null };
+
+function closeNewsroom() {
+  const panel = document.getElementById("newsroom");
+  if (panel.hidden) return;
+  panel.hidden = true;
+  // Removing the players stops the streams.
+  document.getElementById("newsroom-body").replaceChildren();
+  clearInterval(newsroom.timer);
+}
+
+function openNewsroom(tab = newsroom.tab) {
+  document.getElementById("drawer").hidden = true;
+  newsroom.tab = tab;
+  document.getElementById("newsroom").hidden = false;
+  for (const button of document.querySelectorAll("[data-news-tab]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.newsTab === tab));
+  }
+  clearInterval(newsroom.timer);
+  if (tab === "tv") renderTvWall();
+  else {
+    renderHeadlines();
+    newsroom.timer = setInterval(renderHeadlines, 5 * 60_000);
+  }
+}
+
+function tvTile(slot, chosen) {
+  const channel = CHANNELS.find((each) => each.id === chosen) ?? CHANNELS[slot];
+  const select = el(
+    "select",
+    { "aria-label": `Channel for screen ${slot + 1}` },
+    ...CHANNELS.map((each) => el("option", { value: each.id, selected: each.id === channel.id }, each.name)),
+  );
+  select.addEventListener("change", () => {
+    const wall = saved.get("tvWall", CHANNELS.slice(0, 4).map((each) => each.id));
+    wall[slot] = select.value;
+    saved.set("tvWall", wall);
+    renderTvWall();
+  });
+  return el(
+    "div",
+    { class: "tv-tile" },
+    el(
+      "div",
+      { class: "tv-head" },
+      select,
+      el("a", { href: `https://www.youtube.com/channel/${channel.channel}/live`, target: "_blank", rel: "noopener noreferrer" }, "YouTube ↗"),
+    ),
+    el("iframe", {
+      src: `https://www.youtube.com/embed/live_stream?channel=${channel.channel}&autoplay=1&mute=1&playsinline=1`,
+      title: `${channel.name} live`,
+      allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
+      allowfullscreen: true,
+      // YouTube refuses to play embeds that arrive without a referrer.
+      referrerpolicy: "strict-origin-when-cross-origin",
+    }),
+  );
+}
+
+function renderTvWall() {
+  const wall = saved.get("tvWall", CHANNELS.slice(0, 4).map((each) => each.id));
+  document.getElementById("newsroom-body").replaceChildren(
+    el("div", { class: "tv-grid" }, ...[0, 1, 2, 3].map((slot) => tvTile(slot, wall[slot]))),
+    el("p", { class: "note" }, "Streams start muted; click a player for sound. If a channel is not broadcasting, its screen says so. Choose channels with the menus above each screen."),
+  );
+}
+
+async function renderHeadlines() {
+  const body = document.getElementById("newsroom-body");
+  if (!body.querySelector(".headlines")) body.replaceChildren(el("p", { class: "note" }, "Loading headlines…"));
+  let data;
+  try {
+    data = await api("/api/headlines");
+  } catch (error) {
+    body.replaceChildren(el("div", { class: "result error" }, `Could not load headlines. ${error.message}`));
+    return;
+  }
+  if (newsroom.tab !== "headlines" || document.getElementById("newsroom").hidden) return;
+  const shown = data.headlines.filter((story) => newsroom.filter === "All" || story.region === newsroom.filter);
+  body.replaceChildren(
+    el(
+      "div",
+      { class: "tabs headline-filters", role: "group", "aria-label": "Region" },
+      ...HEADLINE_FILTERS.map((name) =>
+        el("button", { "aria-pressed": String(newsroom.filter === name), onclick: () => { newsroom.filter = name; renderHeadlines(); } }, name),
+      ),
+    ),
+    el(
+      "p",
+      { class: "note" },
+      `${data.headlines.length} stories from 24 outlets, updated ${ago(data.fetchedAt)}.`,
+      data.failed.length ? ` Not answering just now: ${data.failed.join(", ")}.` : "",
+    ),
+    el(
+      "ol",
+      { class: "headlines" },
+      ...shown.map((story) => {
+        const href = safeUrl(story.url);
+        return el(
+          "li",
+          {},
+          el("div", { class: "meta" }, `${story.outlet} · ${story.region} · ${ago(story.publishedAt)}`),
+          href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, story.title) : story.title,
+          story.summary ? el("p", {}, story.summary) : null,
+        );
+      }),
+    ),
+  );
 }
 
 function openSites() {
@@ -1117,8 +1255,14 @@ document.getElementById("zoom-in").addEventListener("click", () => map.zoomIn())
 document.getElementById("zoom-out").addEventListener("click", () => map.zoomOut());
 document.getElementById("zoom-sites").addEventListener("click", fitSites);
 document.getElementById("drawer-close").addEventListener("click", () => (document.getElementById("drawer").hidden = true));
+document.getElementById("newsroom-close").addEventListener("click", closeNewsroom);
+for (const button of document.querySelectorAll("[data-news-tab]")) {
+  button.addEventListener("click", () => openNewsroom(button.dataset.newsTab));
+}
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") document.getElementById("drawer").hidden = true;
+  if (event.key !== "Escape") return;
+  document.getElementById("drawer").hidden = true;
+  closeNewsroom();
 });
 
 function showAlerts(visible) {

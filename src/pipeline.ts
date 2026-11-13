@@ -1,9 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BATCH_SIZE, buildSystemPrompt, classifyBatch, createClient } from "./classify";
-import { findExistingIds, insertItems, listSites, recentIncidents, recordRun, type RunRecord } from "./db";
+import { findExistingIds, getSetting, insertItems, listSites, recentIncidents, recordRun, setSetting, type RunRecord } from "./db";
 import { nearestSite } from "./geo";
 import { notify } from "./notify";
 import { collect } from "./sources";
+import { OUTLETS } from "./sources/outlets";
 import type { Candidate, ClassifiedItem, Env } from "./types";
 import { WATCHLIST } from "./watchlist";
 
@@ -12,6 +13,11 @@ import { WATCHLIST } from "./watchlist";
 export const MAX_NEW_PER_RUN = 60;
 
 const INCIDENT_WINDOW_MS = 2 * 86_400_000;
+
+// Outlets read per run, rotating through the list, to stay inside Cloudflare's
+// per-run request limit. Each outlet is read about once an hour.
+export const OUTLETS_PER_RUN = 6;
+const OUTLET_ROTATION = "outlet_rotation";
 
 function describeError(error: unknown): string {
   if (error instanceof Anthropic.AuthenticationError) {
@@ -30,7 +36,10 @@ function newestFirst(a: Candidate, b: Candidate): number {
 export async function runPipeline(env: Env, now: Date = new Date()): Promise<RunRecord> {
   const errors: string[] = [];
   const sites = await listSites(env.DB);
-  const { candidates, sources } = await collect({ ...WATCHLIST, sites }, now);
+  const start = Number((await getSetting(env.DB, OUTLET_ROTATION)) ?? "0") % OUTLETS.length;
+  const outlets = Array.from({ length: Math.min(OUTLETS_PER_RUN, OUTLETS.length) }, (_, i) => OUTLETS[(start + i) % OUTLETS.length]!);
+  const { candidates, sources } = await collect({ ...WATCHLIST, sites, outlets }, now);
+  await setSetting(env.DB, OUTLET_ROTATION, String((start + outlets.length) % OUTLETS.length));
 
   const existing = await findExistingIds(env.DB, candidates.map((candidate) => candidate.id));
   const unseen = candidates.filter((candidate) => !existing.has(candidate.id)).sort(newestFirst);

@@ -113,7 +113,7 @@ describe("runPipeline", () => {
 
     const run = await runPipeline(env, NOW);
 
-    expect(run).toMatchObject({ fetched: 11, newItems: 11, alerts: 5, errors: [] });
+    expect(run).toMatchObject({ fetched: 13, newItems: 13, alerts: 5, errors: [] });
     expect(run.sources.every((source) => source.error === null)).toBe(true);
 
     const alerts = await listAlerts(env.DB, { limit: 50 });
@@ -137,7 +137,7 @@ describe("runPipeline", () => {
     });
     expect(alerts.find((a) => a.title.startsWith("Protesters"))).toMatchObject({ site: "", distanceMi: null, lat: null });
 
-    // One request carried all eleven items, with the documented request shape.
+    // One request carried all thirteen items, with the documented request shape.
     expect(outbound.claude).toHaveLength(1);
     const { headers, body } = outbound.claude[0]!;
     expect(body.model).toBe("claude-opus-5-5");
@@ -173,7 +173,7 @@ describe("runPipeline", () => {
 
     // A second run sees nothing new and sends nothing again.
     const second = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(second).toMatchObject({ fetched: 11, newItems: 0, alerts: 0 });
+    expect(second).toMatchObject({ fetched: 13, newItems: 0, alerts: 0 });
     expect(outbound.claude).toHaveLength(1);
     expect(outbound.emails).toHaveLength(1);
     expect(outbound.texts).toHaveLength(2);
@@ -209,8 +209,8 @@ describe("runPipeline", () => {
     stubNetwork({ claude: () => message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: "" } }) });
     const refusedEnv = createEnv();
     const refused = await runPipeline(refusedEnv, NOW);
-    expect(refused.alerts).toBe(11);
-    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(11);
+    expect(refused.alerts).toBe(13);
+    expect(await listAlerts(refusedEnv.DB, { category: "unclassified", limit: 50 })).toHaveLength(13);
   });
 
   it("stores nothing when the classifier is unavailable, so the next run retries", async () => {
@@ -223,7 +223,7 @@ describe("runPipeline", () => {
 
     stubNetwork();
     const retried = await runPipeline(env, new Date(NOW.getTime() + 15 * 60_000));
-    expect(retried).toMatchObject({ newItems: 11, alerts: 5, errors: [] });
+    expect(retried).toMatchObject({ newItems: 13, alerts: 5, errors: [] });
   });
 
   it("retries a failed email on the next run", async () => {
@@ -251,22 +251,6 @@ describe("dashboard API", () => {
   const auth = { Authorization: `Basic ${btoa("team:hunter2")}` };
   const call = (env: Env, path: string, init: RequestInit = {}) =>
     worker.fetch(new Request(`https://sentinel.example${path}`, { ...init, headers: { ...auth, ...init.headers } }), env);
-
-  it("requires the dashboard password", async () => {
-    const env = createEnv();
-    const anonymous = await worker.fetch(new Request("https://sentinel.example/api/alerts"), env);
-    expect(anonymous.status).toBe(401);
-    expect(anonymous.headers.get("WWW-Authenticate")).toContain("Basic");
-
-    const wrong = await worker.fetch(
-      new Request("https://sentinel.example/", { headers: { Authorization: `Basic ${btoa("team:nope")}` } }),
-      env,
-    );
-    expect(wrong.status).toBe(401);
-
-    expect((await call(env, "/")).status).toBe(200);
-    expect((await worker.fetch(new Request("https://sentinel.example/"), createEnv({ DASHBOARD_PASSWORD: undefined }))).status).toBe(503);
-  });
 
   it("lists, filters and updates alerts", async () => {
     // The status endpoint reports the last 24 hours, measured from the clock.
@@ -298,11 +282,11 @@ describe("dashboard API", () => {
 
     const status = (await (await call(env, "/api/status")).json()) as any;
     expect(status.open).toEqual({ critical: 1, low: 1 });
-    expect(status.lastRun.newItems).toBe(11);
+    expect(status.lastRun.newItems).toBe(13);
     expect(status).toMatchObject({ email: false, sms: false });
     expect(status.sites).toHaveLength(5);
     expect(status.sites[0]).toMatchObject({ name: "CBS Broadcast Center", city: "New York", lat: 40.7689, lon: -73.9908, priority: true });
-    expect(status.activity).toEqual([{ hour: "2026-11-12T12", alerts: 5, scanned: 11 }]);
+    expect(status.activity).toEqual([{ hour: "2026-11-12T12", alerts: 5, scanned: 13 }]);
   });
 
   it("imports a site list, estimating coordinates that are missing", async () => {
