@@ -1,4 +1,4 @@
-import { correlate, feedsForSites, nearestCameras } from "/cameras.js";
+import { correlate, distanceMiles, feedsForSites, nearestCameras } from "/cameras.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const SEVERITY_COLORS = { critical: "#ff5252", high: "#ff8d5c", medium: "#fab219", low: "#8a93a0" };
@@ -1213,6 +1213,77 @@ async function refresh() {
   }
 }
 
+// ---------- my location ----------
+
+// Alerts within this many miles of you are counted in the "you are here" popup.
+const NEARBY_MILES = 10;
+let myLocation = null;
+// Keeps the popup narrow enough for a phone and clear of the left rail and top bar.
+const LOCATION_POPUP = { maxWidth: 260, autoPanPaddingTopLeft: [80, 80], autoPanPaddingBottomRight: [20, 60] };
+
+const miles = (value) => (value < 0.1 ? "0.1" : value < 10 ? value.toFixed(1) : Math.round(value).toLocaleString());
+
+function locationPopup(lat, lon) {
+  const sites = (state.info?.sites ?? []).map((site) => ({ site, miles: distanceMiles(lat, lon, site.lat, site.lon) }));
+  const nearest = sites.sort((a, b) => a.miles - b.miles)[0];
+  const nearby = state.groups.filter((group) => group.lat !== null && distanceMiles(lat, lon, group.lat, group.lon) <= NEARBY_MILES);
+  const worst = nearby.reduce((top, group) => (!top || rank(group.severity) > rank(top) ? group.severity : top), null);
+  return popup(
+    "Your location",
+    "You are here",
+    nearest ? el("p", {}, `Nearest site: ${nearest.site.name}, ${miles(nearest.miles)} mi away.`) : null,
+    el(
+      "p",
+      { class: nearby.length ? `sev-text-${worst}` : "muted" },
+      nearby.length
+        ? `${nearby.length} open alert${nearby.length === 1 ? "" : "s"} within ${NEARBY_MILES} mi (highest: ${worst}).`
+        : `No open alerts within ${NEARBY_MILES} mi.`,
+    ),
+  );
+}
+
+function locationProblem(message) {
+  L.popup({ ...LOCATION_POPUP, className: "locate-problem" }).setLatLng(map.getCenter()).setContent(popup("My location", "Location unavailable", el("p", {}, message))).openOn(map);
+}
+
+function locateMe() {
+  const button = document.getElementById("locate-me");
+  if (!navigator.geolocation) return locationProblem("This browser cannot share its location.");
+  button.classList.add("busy");
+  button.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    ({ coords }) => {
+      button.classList.remove("busy");
+      button.disabled = false;
+      button.setAttribute("aria-pressed", "true");
+      const { latitude: lat, longitude: lon, accuracy } = coords;
+      myLocation?.remove();
+      const ring = L.circle([lat, lon], { radius: accuracy, color: "#2fd3e6", weight: 1, fillColor: "#2fd3e6", fillOpacity: 0.08, interactive: false });
+      const dot = L.marker([lat, lon], {
+        icon: L.divIcon({ className: "me-marker", html: "<span></span>", iconSize: [18, 18] }),
+        keyboard: false,
+        zIndexOffset: 1000,
+      }).bindPopup(() => locationPopup(lat, lon), LOCATION_POPUP);
+      myLocation = L.layerGroup([ring, dot]).addTo(map);
+      // A rough fix (a laptop on Wi-Fi can be off by miles) is shown whole;
+      // a precise one zooms to street level.
+      if (accuracy > 1500) map.flyToBounds(ring.getBounds().pad(0.2), { maxZoom: 15, duration: 0.8 });
+      else map.flyTo([lat, lon], 15, { duration: 0.8 });
+      map.once("moveend", () => dot.openPopup());
+    },
+    (error) => {
+      button.classList.remove("busy");
+      button.disabled = false;
+      locationProblem(
+        error.code === error.PERMISSION_DENIED
+          ? "Location is blocked for this site. Allow it in your browser's site settings (the icon next to the address), then press the button again."
+          : "Your location could not be found just now. Check that location services are on, then try again.",
+      );
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
+  );
+}
+
 function fitSites() {
   const sites = state.info?.sites ?? [];
   if (!sites.length) return;
@@ -1254,6 +1325,7 @@ for (const button of document.querySelectorAll("[data-base]")) {
 document.getElementById("zoom-in").addEventListener("click", () => map.zoomIn());
 document.getElementById("zoom-out").addEventListener("click", () => map.zoomOut());
 document.getElementById("zoom-sites").addEventListener("click", fitSites);
+document.getElementById("locate-me").addEventListener("click", locateMe);
 document.getElementById("drawer-close").addEventListener("click", () => (document.getElementById("drawer").hidden = true));
 document.getElementById("newsroom-close").addEventListener("click", closeNewsroom);
 for (const button of document.querySelectorAll("[data-news-tab]")) {
