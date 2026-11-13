@@ -1,4 +1,4 @@
-"use strict";
+import { correlate, feedsForSites, nearestCameras } from "/cameras.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const SEVERITY_COLORS = { critical: "#ff5252", high: "#ff8d5c", medium: "#fab219", low: "#8a93a0" };
@@ -27,7 +27,10 @@ const WEATHER_CODES = {
   95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
 };
 
-const state = { category: "", severity: "", status: "new", alerts: [], groups: [], info: null, quakes: [] };
+const state = { category: "", severity: "", status: "new", alerts: [], groups: [], info: null, quakes: [], cameras: [], cameraFeeds: [] };
+
+// A camera counts as covering a site when it is within this many miles of it.
+const CAMERA_RANGE_MILES = 2;
 
 // ---------- helpers ----------
 
@@ -173,6 +176,42 @@ function planeIcon(track, emergency) {
   return L.divIcon({ html: holder, className: "", iconSize: [18, 18], iconAnchor: [9, 9] });
 }
 
+function cameraView(each) {
+  const note = [each.owner, each.nearSite ? `${each.siteMiles.toFixed(1)} mi from ${each.nearSite}` : null].filter(Boolean).join(" · ");
+  return popup(
+    "Traffic camera",
+    each.name,
+    el("p", { class: "muted" }, note),
+    each.image
+      ? el("img", { src: `${each.image}${each.image.includes("?") ? "&" : "?"}t=${Date.now()}`, alt: `Live view from ${each.name}`, referrerpolicy: "no-referrer" })
+      : el("p", {}, el("a", { href: each.link, target: "_blank", rel: "noopener noreferrer" }, "Open the live video")),
+  );
+}
+
+// A short list of the open cameras closest to a point; choosing one shows it.
+function nearbyCameras(lat, lon, holder) {
+  const cameraLayer = LAYERS.find((layer) => layer.id === "cameras");
+  if (!cameraLayer.active) {
+    holder.replaceChildren(el("p", { class: "muted" }, "Switch on the camera layer to see nearby cameras."));
+    return;
+  }
+  const near = nearestCameras(state.cameras, lat, lon, 4, CAMERA_RANGE_MILES);
+  if (!near.length) {
+    holder.replaceChildren(el("p", { class: "muted" }, `No open cameras within ${CAMERA_RANGE_MILES} miles.`));
+    return;
+  }
+  const viewer = el("div", {});
+  holder.replaceChildren(
+    el("div", { class: "label" }, "Nearest cameras"),
+    el(
+      "div",
+      { class: "camera-list" },
+      ...near.map((each) => el("button", { onclick: () => viewer.replaceChildren(cameraView(each)) }, `${each.name} · ${each.miles.toFixed(1)} mi`)),
+    ),
+    viewer,
+  );
+}
+
 async function siteConditions(site, holder) {
   const query = `lat=${site.lat}&lon=${site.lon}`;
   const [weather, alerts] = await Promise.allSettled([api(`/api/feeds/weather?${query}`), api(`/api/feeds/weather-alerts?${query}`)]);
@@ -202,6 +241,7 @@ const LAYERS = [
       for (const site of state.info?.sites ?? []) {
         const icon = L.divIcon({ html: el("div", { class: site.priority ? "site-marker" : "site-marker minor" }), className: "", iconSize: [14, 14], iconAnchor: [7, 7] });
         const conditions = el("div", {}, el("p", { class: "muted" }, "Loading conditions…"));
+        const cameras = el("div", {});
         const marker = L.marker([site.lat, site.lon], { icon, title: site.name, zIndexOffset: 500 }).bindPopup(
           popup(
             site.priority ? "Priority site" : "Site",
@@ -209,9 +249,13 @@ const LAYERS = [
             el("p", { class: "muted" }, [site.address, site.city, site.country].filter(Boolean).join(", ")),
             site.approximate ? el("p", { class: "muted" }, "Position is approximate.") : null,
             conditions,
+            cameras,
           ),
         );
-        marker.on("popupopen", () => siteConditions(site, conditions));
+        marker.on("popupopen", () => {
+          siteConditions(site, conditions);
+          nearbyCameras(site.lat, site.lon, cameras);
+        });
         group.addLayer(marker);
       }
       return (state.info?.sites ?? []).length;
@@ -228,6 +272,7 @@ const LAYERS = [
         if (item.lat === null || item.lon === null) continue;
         count++;
         const live = item.status === "new" && rank(item.severity) >= rank("high");
+        const cameras = el("div", {});
         const icon = L.divIcon({ html: el("div", { class: `incident-marker sev-${item.severity}${live ? " live" : ""}` }), className: "", iconSize: [20, 20], iconAnchor: [10, 10] });
         const marker = L.marker([item.lat, item.lon], { icon, title: item.name, zIndexOffset: 1000 + rank(item.severity) }).bindPopup(
           popup(
@@ -236,8 +281,10 @@ const LAYERS = [
             el("p", {}, item.summary),
             proximity(item) ? el("p", {}, el("strong", {}, proximity(item))) : null,
             el("p", { class: "muted" }, `${item.reports.length} report${item.reports.length === 1 ? "" : "s"} · ${ago(item.latest)}`),
+            cameras,
           ),
         );
+        marker.on("popupopen", () => nearbyCameras(item.lat, item.lon, cameras));
         item.marker = marker;
         group.addLayer(marker);
       }
@@ -348,44 +395,40 @@ const LAYERS = [
   },
   {
     id: "cameras",
-    label: "Traffic cameras (Los Angeles and New York)",
+    label: "Traffic cameras around your sites",
     icon: "M3 8h3l2-3h8l2 3h3v11H3zM12 17a4 4 0 100-8 4 4 0 000 8z",
-    on: false,
-    every: 900,
+    on: true,
+    every: 1800,
+    needsSites: true,
     async load(group) {
-      const [la, nyc] = await Promise.allSettled([api("/api/feeds/cameras-la"), api("/api/feeds/cameras-nyc")]);
-      if (la.status === "rejected" && nyc.status === "rejected") throw la.reason;
-      const cameras = [];
-      if (la.status === "fulfilled") {
-        for (const { cctv } of la.value.data ?? []) {
-          if (cctv?.inService !== "true") continue;
-          cameras.push({
-            lat: Number(cctv.location?.latitude),
-            lon: Number(cctv.location?.longitude),
-            name: cctv.location?.locationName,
-            image: safeUrl(cctv.imageData?.static?.currentImageURL, ["cwwp2.dot.ca.gov"]),
-            owner: "Caltrans",
-          });
-        }
-      }
-      if (nyc.status === "fulfilled") {
-        for (const camera of nyc.value ?? []) {
-          if (camera.isOnline !== "true") continue;
-          cameras.push({ lat: camera.latitude, lon: camera.longitude, name: camera.name, image: safeUrl(camera.imageUrl, ["webcams.nyctmc.org"]), owner: "NYC DOT" });
-        }
-      }
-      let count = 0;
-      for (const camera of cameras) {
-        if (!Number.isFinite(camera.lat) || !Number.isFinite(camera.lon) || !camera.image) continue;
-        count++;
-        const marker = L.circleMarker([camera.lat, camera.lon], { radius: 4, color: "#04130b", weight: 1, fillColor: "#1fd67a", fillOpacity: 0.9 });
+      const sites = state.info?.sites ?? [];
+      const feeds = feedsForSites(sites);
+      const results = await Promise.allSettled(
+        feeds.map(async (feed) => {
+          const response = await fetch(feed.url);
+          if (!response.ok) throw new Error(`Request failed (${response.status})`);
+          return feed.parse(await response.text());
+        }),
+      );
+      state.cameraFeeds = feeds.map((feed, index) => ({
+        place: feed.place,
+        ok: results[index].status === "fulfilled",
+        count: results[index].status === "fulfilled" ? results[index].value.length : 0,
+      }));
+      if (feeds.length && results.every((result) => result.status === "rejected")) throw results[0].reason;
+
+      state.cameras = correlate(results.flatMap((result) => (result.status === "fulfilled" ? result.value : [])), sites, CAMERA_RANGE_MILES);
+      let nearSites = 0;
+      for (const each of state.cameras) {
+        if (each.nearSite) nearSites++;
+        // Cameras that cover a site stand out; the rest stay in the background.
+        const style = each.nearSite
+          ? { radius: 5, color: "#04130b", weight: 1, fillColor: "#1fd67a", fillOpacity: 0.95 }
+          : { radius: 3, stroke: false, fillColor: "#1fd67a", fillOpacity: 0.35 };
         // The image is only requested when someone opens the camera.
-        marker.bindPopup(() =>
-          popup("Traffic camera", camera.name ?? "Camera", el("p", { class: "muted" }, camera.owner), el("img", { src: `${camera.image}?t=${Date.now()}`, alt: `Live view from ${camera.name ?? "camera"}`, referrerpolicy: "no-referrer" })),
-        );
-        group.addLayer(marker);
+        group.addLayer(L.circleMarker([each.lat, each.lon], style).bindPopup(() => cameraView(each)));
       }
-      return count;
+      return nearSites;
     },
   },
   {
@@ -417,7 +460,7 @@ const LAYERS = [
   },
 ];
 
-const savedLayers = saved.get("layers", {});
+const savedLayers = saved.get("layers2", {});
 for (const layer of LAYERS) {
   layer.group = L.layerGroup();
   layer.active = savedLayers[layer.id] ?? layer.on;
@@ -446,7 +489,7 @@ async function loadLayer(layer) {
 
 function toggleLayer(layer) {
   layer.active = !layer.active;
-  saved.set("layers", Object.fromEntries(LAYERS.map((each) => [each.id, each.active])));
+  saved.set("layers2", Object.fromEntries(LAYERS.map((each) => [each.id, each.active])));
   clearInterval(layer.timer);
   if (layer.active) {
     loadLayer(layer);
@@ -782,7 +825,8 @@ const CAN_JOIN = [
   ["key", "Ships and ports (AIS)", "Live vessel positions through a free aisstream.io key."],
   ["key", "Wildfire hotspots", "NASA FIRMS satellite fire detections with a free map key."],
   ["key", "Protests and unrest", "ACLED event data with free registration; good for planned demonstrations."],
-  ["key", "More traffic cameras", "Other regions publish feeds too (state 511 systems, Transport for London) and each needs its own adapter or key."],
+  ["key", "Cameras: Atlanta, Miami, Philadelphia, Pittsburgh, Salt Lake City", "The Georgia, Florida, Pennsylvania and Utah 511 systems each give a free developer key on request."],
+  ["down", "Cameras: Washington DC, Chicago, Boston, Denver, Minneapolis, Dallas", "No open camera feed was found for these cities; Maryland's cameras cover the Washington suburbs only."],
   ["key", "Email and text delivery", "SendGrid and Twilio are built in and only need their keys added."],
   ["paid", "X / Twitter", "The search API is paid. It is the largest source of breaking incident chatter."],
   ["paid", "Animated global wind", "Needs a weather-model data service such as Windy or Meteomatics."],
@@ -812,12 +856,22 @@ function openFeeds() {
       {},
       el("tbody", {}, ...LAYERS.map((layer) => row(layer.failed ? "down" : "live", layer.label, layer.active ? (layer.failed ? "Did not respond just now" : "Showing") : "Available, switched off"))),
     ),
+    el("h3", {}, "Camera coverage for your sites"),
+    state.cameraFeeds.length
+      ? el(
+          "table",
+          {},
+          el("tbody", {}, ...state.cameraFeeds.map((feed) => row(feed.ok ? "live" : "down", feed.place, feed.ok ? `${feed.count.toLocaleString()} cameras` : "Did not respond just now"))),
+        )
+      : el("p", { class: "note" }, "Switch on the camera layer to load the feeds that cover your sites."),
     el("h3", {}, "What else can be connected"),
     el("table", {}, el("tbody", {}, ...CAN_JOIN.map(([kind, name, note]) => row(kind, name, note)))),
   );
 }
 
 // ---------- wiring ----------
+
+let knownSites = -1;
 
 async function refresh() {
   renderCategories();
@@ -834,6 +888,12 @@ async function refresh() {
     renderTicker();
     await Promise.all(LAYERS.filter((layer) => layer.id === "sites" || layer.id === "incidents").map(loadLayer));
     if (firstLoad) fitSites();
+    // Layers built from the site list load once it is known, and again if it changes.
+    const siteCount = info.sites.length;
+    if (siteCount !== knownSites) {
+      knownSites = siteCount;
+      LAYERS.filter((layer) => layer.needsSites).forEach(loadLayer);
+    }
   } catch (error) {
     feed.replaceChildren(el("div", { class: "empty error" }, `Could not load alerts. ${error.message}`));
   }
@@ -910,7 +970,7 @@ renderRail();
 renderCursor();
 for (const layer of LAYERS) {
   if (layer.id !== "sites" && layer.id !== "incidents") {
-    loadLayer(layer);
+    if (!layer.needsSites) loadLayer(layer);
     if (layer.active && layer.every) layer.timer = setInterval(() => loadLayer(layer), layer.every * 1000);
   }
 }

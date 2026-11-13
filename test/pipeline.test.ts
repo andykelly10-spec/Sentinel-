@@ -359,6 +359,13 @@ describe("dashboard API", () => {
     expect((await call(env, "/api/feeds/aircraft?lat=1/../../x&lon=1")).status).toBe(400);
     expect((await call(env, "/api/feeds/anything-else")).status).toBe(404);
     expect(requested).toHaveLength(2);
+
+    // Camera lists come only from the districts that are listed.
+    await call(env, "/api/feeds/cameras-caltrans?district=4");
+    expect(requested[2]).toBe("https://cwwp2.dot.ca.gov/data/d4/cctv/cctvStatusD04.json");
+    expect((await call(env, "/api/feeds/cameras-caltrans?district=99")).status).toBe(400);
+    expect((await call(env, "/api/feeds/cameras-caltrans")).status).toBe(400);
+    expect(requested).toHaveLength(3);
     expect((await worker.fetch(new Request("https://sentinel.example/api/feeds/quakes"), env)).status).toBe(401);
   });
 });

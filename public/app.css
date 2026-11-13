@@ -69,6 +69,10 @@ a { color: var(--cyan); }
 .popup .label { font-size: 10px; color: var(--gold); }
 .popup p { margin: 4px 0; color: var(--text); }
 .popup .muted { color: var(--muted); font-size: 12px; }
+.camera-list { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; }
+.camera-list button { text-align: left; font: 12px var(--sans); padding: 5px 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); color: var(--text); }
+.camera-list button:hover { border-color: rgba(31, 214, 122, 0.7); }
+.popup .popup { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .popup img { display: block; width: 280px; max-width: 100%; margin-top: 8px; border-radius: 4px; background: #000; min-height: 120px; }
 
 /* Markers */

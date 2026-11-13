@@ -10,10 +10,11 @@ import { ALERT_CATEGORIES, SEVERITIES, type Alert, type Env } from "./types";
 const STATUSES: Array<Alert["status"]> = ["new", "acknowledged", "dismissed"];
 const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
 
-// The page runs only its own scripts and talks only to this worker; map tiles
-// and camera stills are the one thing loaded from elsewhere.
+// The page runs only its own scripts. It talks to this worker, plus Transport
+// for London's camera list, which refuses requests relayed from Cloudflare.
+// Map tiles and camera stills are the only other things loaded from elsewhere.
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.tfl.gov.uk; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
