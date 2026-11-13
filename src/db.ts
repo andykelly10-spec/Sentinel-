@@ -1,4 +1,4 @@
-import type { Alert, ClassifiedItem, NewSite, Site, SourceResult } from "./types";
+import type { Alert, AlertStatus, ClassifiedItem, HazardItem, NewSite, Site, SourceResult } from "./types";
 import { SEVERITIES } from "./types";
 
 // D1 allows at most 100 bound parameters per statement.
@@ -28,9 +28,13 @@ export async function findExistingIds(db: D1Database, ids: string[]): Promise<Se
   return existing;
 }
 
-const ITEM_COLUMNS = 17;
+const ITEM_COLUMNS = 18;
 
-export async function insertItems(db: D1Database, items: ClassifiedItem[], now: string): Promise<void> {
+export async function insertItems(
+  db: D1Database,
+  items: Array<ClassifiedItem & { expiresAt?: string | null }>,
+  now: string,
+): Promise<void> {
   if (items.length === 0) return;
   const row = `(${placeholders(ITEM_COLUMNS)})`;
   const statements = chunk(items, Math.floor(MAX_PARAMS / ITEM_COLUMNS)).map((group) =>
@@ -38,7 +42,7 @@ export async function insertItems(db: D1Database, items: ClassifiedItem[], now: 
       .prepare(
         `INSERT OR IGNORE INTO items
            (id, source, url, title, snippet, author, published_at, first_seen_at, category, severity, summary,
-            incident, place, lat, lon, site, distance_mi)
+            incident, place, lat, lon, site, distance_mi, expires_at)
          VALUES ${group.map(() => row).join(", ")}`,
       )
       .bind(
@@ -60,6 +64,7 @@ export async function insertItems(db: D1Database, items: ClassifiedItem[], now: 
           item.lon,
           item.site,
           item.distanceMi,
+          item.expiresAt ?? null,
         ]),
       ),
   );
@@ -85,6 +90,7 @@ interface ItemRow {
   lon: number | null;
   site: string;
   distance_mi: number | null;
+  expires_at: string | null;
 }
 
 function toAlert(row: ItemRow): Alert {
@@ -107,6 +113,7 @@ function toAlert(row: ItemRow): Alert {
     lon: row.lon,
     site: row.site,
     distanceMi: row.distance_mi,
+    expiresAt: row.expires_at,
   };
 }
 
@@ -142,7 +149,7 @@ export async function listAlerts(db: D1Database, filter: AlertFilter): Promise<A
   return results.map(toAlert);
 }
 
-export async function setAlertStatus(db: D1Database, id: string, status: Alert["status"]): Promise<boolean> {
+export async function setAlertStatus(db: D1Database, id: string, status: AlertStatus): Promise<boolean> {
   const result = await db
     .prepare("UPDATE items SET status = ? WHERE id = ? AND category != 'none'")
     .bind(status, id)
@@ -150,7 +157,7 @@ export async function setAlertStatus(db: D1Database, id: string, status: Alert["
   return result.meta.changes > 0;
 }
 
-export async function setIncidentStatus(db: D1Database, incident: string, status: Alert["status"]): Promise<boolean> {
+export async function setIncidentStatus(db: D1Database, incident: string, status: AlertStatus): Promise<boolean> {
   const result = await db
     .prepare("UPDATE items SET status = ? WHERE incident = ? AND category != 'none'")
     .bind(status, incident)
@@ -206,7 +213,7 @@ export async function pendingAlerts(db: D1Database, channel: "emailed_at" | "sms
   const { results } = await db
     .prepare(
       `SELECT * FROM items
-       WHERE category != 'none' AND status != 'dismissed' AND ${channel} IS NULL AND first_seen_at >= ?
+       WHERE category != 'none' AND status IN ('new', 'acknowledged') AND ${channel} IS NULL AND first_seen_at >= ?
        ORDER BY ${SEVERITY_ORDER} DESC, first_seen_at DESC
        LIMIT ${MAX_PENDING}`,
     )
@@ -228,7 +235,10 @@ export async function markSent(
     .run();
 }
 
+export type RunKind = "news" | "hazards";
+
 export interface RunRecord {
+  kind?: RunKind;
   startedAt: string;
   finishedAt: string;
   fetched: number;
@@ -248,10 +258,11 @@ export async function recordRun(db: D1Database, run: RunRecord): Promise<void> {
   await db.batch([
     db
       .prepare(
-        `INSERT INTO runs (started_at, finished_at, fetched, new_items, alerts, sources, errors)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (kind, started_at, finished_at, fetched, new_items, alerts, sources, errors)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
+        run.kind ?? "news",
         run.startedAt,
         run.finishedAt,
         run.fetched,
@@ -267,9 +278,10 @@ export async function recordRun(db: D1Database, run: RunRecord): Promise<void> {
   ]);
 }
 
-export async function latestRun(db: D1Database): Promise<RunRecord | null> {
+export async function latestRun(db: D1Database, kind: RunKind = "news"): Promise<RunRecord | null> {
   const row = await db
-    .prepare("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    .prepare("SELECT * FROM runs WHERE kind = ? ORDER BY id DESC LIMIT 1")
+    .bind(kind)
     .first<{
       started_at: string;
       finished_at: string;
@@ -281,6 +293,7 @@ export async function latestRun(db: D1Database): Promise<RunRecord | null> {
     }>();
   if (!row) return null;
   return {
+    kind,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     fetched: row.fetched,
@@ -335,4 +348,139 @@ export async function saveSites(db: D1Database, sites: NewSite[], replace: boole
   );
   // One batch, so a failed import cannot leave the list half replaced.
   await db.batch([...(replace ? [db.prepare("DELETE FROM sites")] : []), ...inserts]);
+}
+
+// Records the NWS lookup for each site: zone codes ('' when outside coverage) and state.
+export async function saveSiteZones(
+  db: D1Database,
+  zones: Array<{ id: number; nwsZones: string; region: string }>,
+): Promise<void> {
+  if (zones.length === 0) return;
+  await db.batch(
+    zones.map((zone) =>
+      db.prepare("UPDATE sites SET nws_zones = ?, region = ? WHERE id = ?").bind(zone.nwsZones, zone.region, zone.id),
+    ),
+  );
+}
+
+export async function getSetting(db: D1Database, key: string): Promise<string | null> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    .bind(key, value)
+    .run();
+}
+
+// Pushes the expiry of ongoing hazards that are still being reported.
+export async function extendExpiry(db: D1Database, items: HazardItem[]): Promise<void> {
+  const ongoing = items.filter((item) => item.ongoing && item.expiresAt);
+  if (ongoing.length === 0) return;
+  await db.batch(
+    ongoing.map((item) =>
+      db
+        .prepare("UPDATE items SET expires_at = ? WHERE id = ? AND status != 'expired' AND (expires_at IS NULL OR expires_at < ?)")
+        .bind(item.expiresAt, item.id, item.expiresAt),
+    ),
+  );
+}
+
+// Closes alerts whose hazard has lapsed. Returns how many were closed.
+export async function expireAlerts(db: D1Database, now: string): Promise<number> {
+  const result = await db
+    .prepare("UPDATE items SET status = 'expired' WHERE status IN ('new', 'acknowledged') AND expires_at IS NOT NULL AND expires_at < ?")
+    .bind(now)
+    .run();
+  return result.meta.changes;
+}
+
+export interface BriefInput {
+  incident: string;
+  title: string;
+  category: string;
+  severity: string;
+  status: string;
+  site: string;
+  distanceMi: number | null;
+  place: string;
+  summary: string;
+  reports: number;
+  latest: string;
+}
+
+// The last day's alerts, one row per incident (or per alert when it has no
+// incident), most severe first.
+export async function briefInput(db: D1Database, since: string, limit: number): Promise<BriefInput[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT COALESCE(NULLIF(incident, ''), id) AS key, incident, title, category, severity, status, site,
+              distance_mi, place, summary, first_seen_at,
+              ${SEVERITY_ORDER} AS rank
+       FROM items
+       WHERE category != 'none' AND status != 'dismissed' AND first_seen_at >= ?
+       ORDER BY rank DESC, first_seen_at DESC`,
+    )
+    .bind(since)
+    .all<{
+      key: string;
+      incident: string;
+      title: string;
+      category: string;
+      severity: string;
+      status: string;
+      site: string;
+      distance_mi: number | null;
+      place: string;
+      summary: string;
+      first_seen_at: string;
+    }>();
+  const groups = new Map<string, BriefInput>();
+  for (const row of results) {
+    const group = groups.get(row.key);
+    if (group) {
+      group.reports++;
+      if (row.first_seen_at > group.latest) group.latest = row.first_seen_at;
+      continue;
+    }
+    groups.set(row.key, {
+      incident: row.incident,
+      title: row.title,
+      category: row.category,
+      severity: row.severity,
+      status: row.status,
+      site: row.site,
+      distanceMi: row.distance_mi,
+      place: row.place,
+      summary: row.summary,
+      reports: 1,
+      latest: row.first_seen_at,
+    });
+  }
+  return [...groups.values()].slice(0, limit);
+}
+
+export interface StoredBrief {
+  id: number;
+  createdAt: string;
+  periodStart: string;
+  body: unknown;
+}
+
+export async function saveBrief(db: D1Database, createdAt: string, periodStart: string, body: unknown): Promise<number> {
+  const result = await db
+    .prepare("INSERT INTO briefs (created_at, period_start, body) VALUES (?, ?, ?)")
+    .bind(createdAt, periodStart, JSON.stringify(body))
+    .run();
+  return Number(result.meta.last_row_id);
+}
+
+export async function latestBrief(db: D1Database): Promise<StoredBrief | null> {
+  const row = await db
+    .prepare("SELECT * FROM briefs ORDER BY id DESC LIMIT 1")
+    .first<{ id: number; created_at: string; period_start: string; body: string }>();
+  if (!row) return null;
+  return { id: row.id, createdAt: row.created_at, periodStart: row.period_start, body: JSON.parse(row.body) };
 }

@@ -1,3 +1,5 @@
+import { WILDFIRE_QUERY } from "./hazards/wildfires";
+
 // Live public feeds shown as map layers. The dashboard reads them through the
 // worker so it only ever talks to its own address, and so feeds that do not
 // allow browser access still work. Only the upstreams listed here can be reached.
@@ -78,6 +80,19 @@ const FEEDS: Record<string, Feed> = {
     url: () => "https://informo.madrid.es/informo/tmadrid/CCTV.kml",
     maxAge: 900,
     type: "text/plain",
+  },
+  "weather-warnings": {
+    url: () => "https://api.weather.gov/alerts/active?status=actual&severity=Extreme,Severe",
+    maxAge: 300,
+    type: "application/geo+json",
+  },
+  wildfires: {
+    url: () => WILDFIRE_QUERY,
+    maxAge: 900,
+  },
+  disasters: {
+    url: () => "https://www.gdacs.org/gdacsapi/api/events/geteventlist/EVENTS4APP",
+    maxAge: 900,
   },
   weather: {
     url: (params) => {

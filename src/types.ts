@@ -29,9 +29,12 @@ export interface Site {
   keywords: string;
   priority: boolean;
   approximate: boolean;
+  // Filled in by the hazard check; see migrations/0004.
+  nws_zones: string | null;
+  region: string;
 }
 
-export type NewSite = Omit<Site, "id">;
+export type NewSite = Omit<Site, "id" | "nws_zones" | "region">;
 
 export type SourceName =
   | "bing_news"
@@ -40,7 +43,15 @@ export type SourceName =
   | "bluesky"
   | "bluesky_urgent"
   | "lemmy"
-  | "hackernews";
+  | "hackernews"
+  | "nws"
+  | "usgs"
+  | "wildfire"
+  | "gdacs"
+  | "aircraft"
+  | "faa_tfr"
+  | "travel_advisory"
+  | "domains";
 
 export interface RawItem {
   source: SourceName;
@@ -55,7 +66,7 @@ export interface Candidate extends RawItem {
   id: string;
 }
 
-export const ALERT_CATEGORIES = ["physical", "cyber", "brand", "executive"] as const;
+export const ALERT_CATEGORIES = ["physical", "cyber", "brand", "executive", "hazard"] as const;
 export type AlertCategory = (typeof ALERT_CATEGORIES)[number];
 export type Category = AlertCategory | "unclassified" | "none";
 
@@ -80,7 +91,18 @@ export interface ClassifiedItem extends Candidate, Classification {
 
 export interface Alert extends ClassifiedItem {
   firstSeenAt: string;
-  status: "new" | "acknowledged" | "dismissed";
+  status: AlertStatus;
+  expiresAt: string | null;
+}
+
+export const ALERT_STATUSES = ["new", "acknowledged", "dismissed", "expired"] as const;
+export type AlertStatus = (typeof ALERT_STATUSES)[number];
+
+// Produced by rules rather than the classifier.
+export interface HazardItem extends ClassifiedItem {
+  expiresAt: string | null;
+  // Ongoing hazards push their expiry forward each time they are seen again.
+  ongoing: boolean;
 }
 
 export interface SourceResult {

@@ -12,7 +12,8 @@ export function smsBodies(groups: AlertGroup[], dashboardUrl: string): string[] 
     return [`Sentinel: ${groups.length} urgent alerts (${critical} critical). Check the dashboard now.${link}`];
   }
   return groups.map(({ alert }) => {
-    const near = proximityLabel(alert.site, alert.distanceMi);
+    // Hazard summaries already say how far away the site is.
+    const near = alert.summary.includes(alert.site) ? "" : proximityLabel(alert.site, alert.distanceMi);
     const text = truncate(alert.summary || alert.title, 240);
     return `Sentinel ${alert.severity.toUpperCase()} ${alert.category}: ${text}${near ? ` (${near})` : ""}${link}`;
   });

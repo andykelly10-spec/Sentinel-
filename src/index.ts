@@ -1,13 +1,16 @@
+import { writeBrief } from "./brief";
 import { createClient } from "./classify";
-import { hourlyActivity, latestRun, listAlerts, listSites, openCounts, saveSites, setAlertStatus, setIncidentStatus } from "./db";
+import { hourlyActivity, latestBrief, latestRun, listAlerts, listSites, openCounts, saveSites, setAlertStatus, setIncidentStatus } from "./db";
 import { proxyFeed } from "./feeds";
+import { runHazards } from "./hazards";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
+import { BRIEF_CRON, HAZARD_CRON, HOURLY_MINUTE } from "./schedule";
 import { locateSites, parseSitesCsv } from "./sites";
 import { sha256Hex } from "./text";
-import { ALERT_CATEGORIES, SEVERITIES, type Alert, type Env } from "./types";
+import { ALERT_CATEGORIES, ALERT_STATUSES, SEVERITIES, type AlertStatus, type Env } from "./types";
 
-const STATUSES: Array<Alert["status"]> = ["new", "acknowledged", "dismissed"];
+const STATUSES: readonly string[] = ALERT_STATUSES;
 const CATEGORY_FILTERS: string[] = [...ALERT_CATEGORIES, "unclassified"];
 
 // The page runs only its own scripts. It talks to this worker, plus Transport
@@ -66,13 +69,18 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (request.method === "GET" && url.pathname === "/api/status") {
     const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    const [lastRun, open, activity, sites] = await Promise.all([
-      latestRun(env.DB),
+    const [lastRun, lastHazardRun, open, activity, sites] = await Promise.all([
+      latestRun(env.DB, "news"),
+      latestRun(env.DB, "hazards"),
       openCounts(env.DB),
       hourlyActivity(env.DB, dayAgo),
       listSites(env.DB),
     ]);
-    return json({ lastRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
+    return json({ lastRun, lastHazardRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/brief") {
+    return json({ brief: await latestBrief(env.DB) });
   }
 
   if (request.method === "POST") {
@@ -82,6 +90,19 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
     if (url.pathname === "/api/run") {
       return json({ run: await runPipeline(env) });
+    }
+
+    if (url.pathname === "/api/hazards/run") {
+      return json({ run: await runHazards(env, new Date(), true) });
+    }
+
+    if (url.pathname === "/api/brief") {
+      try {
+        return json({ brief: await writeBrief(env) });
+      } catch (error) {
+        console.error("Brief failed:", error);
+        return json({ error: "The brief could not be written. Check that the Anthropic API key is set and try again." }, 502);
+      }
     }
 
     if (url.pathname === "/api/sites/import") {
@@ -105,7 +126,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
     if (url.pathname === "/api/incidents/status") {
       const body = (await request.json().catch(() => null)) as { incident?: string; status?: string } | null;
-      const status = pick(body?.status ?? null, STATUSES) as Alert["status"] | undefined;
+      const status = pick(body?.status ?? null, STATUSES) as AlertStatus | undefined;
       if (!status || !body?.incident) return json({ error: "incident and a valid status are required" }, 400);
       const updated = await setIncidentStatus(env.DB, body.incident, status);
       return updated ? json({ ok: true }) : json({ error: "Incident not found" }, 404);
@@ -114,8 +135,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const match = url.pathname.match(/^\/api\/alerts\/([0-9a-f]{32})\/status$/);
     if (match) {
       const body = (await request.json().catch(() => null)) as { status?: string } | null;
-      const status = pick(body?.status ?? null, STATUSES) as Alert["status"] | undefined;
-      if (!status) return json({ error: "status must be new, acknowledged or dismissed" }, 400);
+      const status = pick(body?.status ?? null, STATUSES) as AlertStatus | undefined;
+      if (!status) return json({ error: `status must be one of: ${STATUSES.join(", ")}` }, 400);
       const updated = await setAlertStatus(env.DB, match[1]!, status);
       return updated ? json({ ok: true }) : json({ error: "Alert not found" }, 404);
     }
@@ -153,7 +174,18 @@ export default {
     return new Response(asset.body, { status: asset.status, headers });
   },
 
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === HAZARD_CRON) {
+      const hourly = new Date(controller.scheduledTime).getUTCMinutes() === HOURLY_MINUTE;
+      const run = await runHazards(env, new Date(controller.scheduledTime), hourly);
+      console.log(`hazards found=${run.fetched} new=${run.newItems} errors=${JSON.stringify(run.errors)}`);
+      return;
+    }
+    if (controller.cron === BRIEF_CRON) {
+      const brief = await writeBrief(env);
+      console.log(`brief ${brief.id} written${brief.emailError ? `, email failed: ${brief.emailError}` : ""}`);
+      return;
+    }
     const run = await runPipeline(env);
     console.log(
       `run fetched=${run.fetched} new=${run.newItems} alerts=${run.alerts} errors=${JSON.stringify(run.errors)}`,

@@ -26,6 +26,7 @@ function alert(fields: Partial<Alert>): Alert {
     lon: null,
     site: "",
     distanceMi: null,
+    expiresAt: null,
     ...fields,
   };
 }

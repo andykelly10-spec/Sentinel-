@@ -61,12 +61,13 @@ export function emailHtml(groups: AlertGroup[], dashboardUrl: string): string {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows}</table>${footer}</div>`;
 }
 
-export async function sendEmail(
+export async function sendgridSend(
   apiKey: string,
   from: string,
   to: string[],
-  groups: AlertGroup[],
-  dashboardUrl: string,
+  subject: string,
+  text: string,
+  html: string,
 ): Promise<void> {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -74,10 +75,10 @@ export async function sendEmail(
     body: JSON.stringify({
       personalizations: to.map((email) => ({ to: [{ email }] })),
       from: { email: from, name: "Sentinel" },
-      subject: emailSubject(groups),
+      subject,
       content: [
-        { type: "text/plain", value: emailText(groups, dashboardUrl) },
-        { type: "text/html", value: emailHtml(groups, dashboardUrl) },
+        { type: "text/plain", value: text },
+        { type: "text/html", value: html },
       ],
     }),
     signal: AbortSignal.timeout(15_000),
@@ -85,4 +86,14 @@ export async function sendEmail(
   if (!response.ok) {
     throw new Error(`SendGrid HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
   }
+}
+
+export async function sendEmail(
+  apiKey: string,
+  from: string,
+  to: string[],
+  groups: AlertGroup[],
+  dashboardUrl: string,
+): Promise<void> {
+  await sendgridSend(apiKey, from, to, emailSubject(groups), emailText(groups, dashboardUrl), emailHtml(groups, dashboardUrl));
 }

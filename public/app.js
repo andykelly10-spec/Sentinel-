@@ -9,6 +9,7 @@ const CATEGORIES = [
   ["cyber", "Cyber"],
   ["brand", "Brand"],
   ["executive", "Executive"],
+  ["hazard", "Hazard"],
   ["unclassified", "Review"],
 ];
 const SOURCE_NAMES = {
@@ -19,7 +20,16 @@ const SOURCE_NAMES = {
   bluesky_urgent: "Bluesky (urgent terms)",
   lemmy: "Lemmy",
   hackernews: "Hacker News",
+  nws: "Weather warnings (National Weather Service)",
+  usgs: "Earthquakes (USGS)",
+  wildfire: "US wildfires (National Interagency Fire Center)",
+  gdacs: "Global disasters (GDACS)",
+  aircraft: "Aircraft emergencies (adsb.lol)",
+  faa_tfr: "Flight restrictions (FAA)",
+  travel_advisory: "Travel advisories (State Department)",
+  domains: "Lookalike domains (certificate logs)",
 };
+const BRIEF_COLORS = { critical: "var(--critical)", high: "var(--high)", medium: "var(--medium)", low: "var(--low)" };
 const WEATHER_CODES = {
   0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Fog",
   51: "Drizzle", 53: "Drizzle", 55: "Drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
@@ -317,6 +327,112 @@ const LAYERS = [
     },
   },
   {
+    id: "weather",
+    label: "Severe weather warnings, US (National Weather Service)",
+    icon: "M13 2L4 14h7l-1 8 9-12h-7z",
+    on: true,
+    every: 300,
+    async load(group) {
+      const data = await api("/api/feeds/weather-warnings");
+      let count = 0;
+      group.addLayer(
+        L.geoJSON(data, {
+          filter: (feature) => Boolean(feature.geometry),
+          style: (feature) => {
+            const color = feature.properties?.severity === "Extreme" ? "#ff5252" : "#ff8d5c";
+            return { color, weight: 1, fillColor: color, fillOpacity: 0.18 };
+          },
+          onEachFeature: (feature, layer) => {
+            count++;
+            const props = feature.properties ?? {};
+            layer.bindPopup(() =>
+              popup(
+                `${props.severity ?? ""} weather`,
+                props.event ?? "Weather warning",
+                el("p", {}, props.areaDesc ?? ""),
+                el("p", { class: "muted" }, props.ends || props.expires ? `Until ${new Date(props.ends ?? props.expires).toUTCString()}` : ""),
+              ),
+            );
+          },
+        }),
+      );
+      return count;
+    },
+  },
+  {
+    id: "wildfires",
+    label: "Active wildfires, US (National Interagency Fire Center)",
+    icon: "M12 2c1 4 5 6 5 11a5 5 0 01-10 0c0-3 2-4 2-7 2 1 3 3 3 5 1-1 1-3 0-9z",
+    on: true,
+    every: 900,
+    async load(group) {
+      const data = await api("/api/feeds/wildfires");
+      let count = 0;
+      for (const { attributes: fire = {}, geometry } of data.features ?? []) {
+        if (typeof geometry?.y !== "number" || typeof geometry?.x !== "number") continue;
+        count++;
+        const acres = Math.round(fire.IncidentSize ?? 0);
+        const contained = typeof fire.PercentContained === "number" ? `${fire.PercentContained}% contained` : "containment not reported";
+        group.addLayer(
+          L.circleMarker([geometry.y, geometry.x], {
+            radius: 3 + Math.min(10, Math.log10(Math.max(1, acres)) * 2),
+            color: "#3a0b00",
+            weight: 1,
+            fillColor: "#ff6a00",
+            fillOpacity: 0.85,
+          }).bindPopup(() =>
+            popup(
+              "Wildfire",
+              fire.IncidentName ?? "Unnamed fire",
+              el("p", {}, `${acres.toLocaleString()} acres, ${contained}`),
+              el("p", { class: "muted" }, [fire.POOCounty && `${fire.POOCounty} County`, (fire.POOState ?? "").replace(/^US-/, "")].filter(Boolean).join(", ")),
+            ),
+          ),
+        );
+      }
+      return count;
+    },
+  },
+  {
+    id: "disasters",
+    label: "Global disasters: cyclones, floods, volcanoes (GDACS)",
+    icon: "M12 4a8 8 0 108 8M12 8a4 4 0 104 4M12 12l8-8",
+    on: true,
+    every: 900,
+    async load(group) {
+      const data = await api("/api/feeds/disasters");
+      const colors = { Red: "#ff5252", Orange: "#ff8d5c" };
+      let count = 0;
+      for (const feature of data.features ?? []) {
+        const props = feature.properties ?? {};
+        // Earthquakes already come from USGS.
+        if (feature.geometry?.type !== "Point" || props.eventtype === "EQ") continue;
+        const [lon, lat] = feature.geometry.coordinates ?? [];
+        if (typeof lat !== "number" || typeof lon !== "number") continue;
+        count++;
+        const level = props.alertlevel ?? "Green";
+        const link = safeUrl(props.url?.report, ["www.gdacs.org"]);
+        group.addLayer(
+          L.circleMarker([lat, lon], {
+            radius: level === "Red" ? 9 : level === "Orange" ? 7 : 5,
+            color: "#000",
+            weight: 1,
+            fillColor: colors[level] ?? "#7fb3ff",
+            fillOpacity: 0.85,
+          }).bindPopup(() =>
+            popup(
+              `${level} alert`,
+              props.name ?? "Disaster",
+              el("p", {}, props.htmldescription ?? ""),
+              link ? el("p", {}, el("a", { href: link, target: "_blank", rel: "noopener noreferrer" }, "GDACS report")) : null,
+            ),
+          ),
+        );
+      }
+      return count;
+    },
+  },
+  {
     id: "daynight",
     label: "Day and night",
     icon: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M12 7l5 2M12 12h8M12 17l5-2",
@@ -535,6 +651,7 @@ function renderRail() {
       ),
     ),
     el("div", { class: "spacer" }),
+    railButton("Morning brief", "M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6", { id: "open-brief", onclick: openBrief }),
     railButton("Sites: view and import your site list", "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01", { id: "open-sites", onclick: openSites }),
     railButton("Feeds: what is connected and what else can be", "M9 2v6M15 2v6M6 8h12v4a6 6 0 01-12 0zM12 18v4", { id: "open-feeds", onclick: openFeeds }),
   );
@@ -823,8 +940,9 @@ function openSites() {
 const CAN_JOIN = [
   ["key", "Reddit", "Blocks Cloudflare without sign-in. Works with a free Reddit API app (client ID and secret)."],
   ["key", "Ships and ports (AIS)", "Live vessel positions through a free aisstream.io key."],
-  ["key", "Wildfire hotspots", "NASA FIRMS satellite fire detections with a free map key."],
-  ["key", "Protests and unrest", "ACLED event data with free registration; good for planned demonstrations."],
+  ["key", "Wildfires outside the US", "NASA FIRMS satellite fire detections with a free map key."],
+  ["paid", "Protests and unrest", "ACLED tracks planned demonstrations by city; commercial use needs a licence."],
+  ["input", "Exploited software (CISA)", "CISA's free list of actively exploited vulnerabilities, matched against the software the company runs once you list it."],
   ["key", "Cameras: Atlanta, Miami, Philadelphia, Pittsburgh, Salt Lake City", "The Georgia, Florida, Pennsylvania and Utah 511 systems each give a free developer key on request."],
   ["down", "Cameras: Washington DC, Chicago, Boston, Denver, Minneapolis, Dallas", "No open camera feed was found for these cities; Maryland's cameras cover the Washington suburbs only."],
   ["key", "Email and text delivery", "SendGrid and Twilio are built in and only need their keys added."],
@@ -837,19 +955,26 @@ const CAN_JOIN = [
   ["down", "Natural-hazard events (NASA EONET)", "Rate-limits Cloudflare's shared addresses. Needs a relay or a cached copy."],
   ["down", "Citizen, PulsePoint, police scanners", "No public feed is offered; licensing would have to be arranged with each."],
 ];
-const STATE_NAMES = { live: "Live", partial: "Intermittent", down: "Blocked", key: "Free key", paid: "Paid" };
+const STATE_NAMES = { live: "Live", partial: "Intermittent", down: "Blocked", key: "Free key", paid: "Paid", input: "Needs your input" };
 
 function openFeeds() {
-  const sources = state.info?.lastRun?.sources ?? [];
   const row = (kind, name, note) => el("tr", {}, el("td", {}, name, el("div", { class: "note" }, note)), el("td", {}, el("span", { class: `state ${kind}` }, STATE_NAMES[kind])));
+  const sourceRows = (run, noun) =>
+    (run?.sources ?? []).map((source) =>
+      row(
+        source.error ? (source.source === "google_news" ? "partial" : "down") : "live",
+        SOURCE_NAMES[source.source] ?? source.source,
+        source.error ? `Failed: ${source.error}` : `${source.count} ${noun}${source.count === 1 ? "" : "s"}`,
+      ),
+    );
+  const hazardRun = state.info?.lastHazardRun;
   openDrawer(
     "Feeds",
-    el("h3", {}, "Alert sources, last check"),
-    el(
-      "table",
-      {},
-      el("tbody", {}, ...sources.map((source) => row(source.error ? (source.source === "google_news" ? "partial" : "down") : "live", SOURCE_NAMES[source.source] ?? source.source, source.error ? `Failed: ${source.error}` : `${source.count} item${source.count === 1 ? "" : "s"}`))),
-    ),
+    el("h3", {}, `News and social, checked ${state.info?.lastRun ? ago(state.info.lastRun.finishedAt) : "never"}`),
+    el("table", {}, el("tbody", {}, ...sourceRows(state.info?.lastRun, "item"))),
+    el("h3", {}, `Hazards, checked ${hazardRun ? ago(hazardRun.finishedAt) : "never"}`),
+    el("p", { class: "note" }, "Counts are hazards near your sites. Travel advisories and lookalike domains are checked once an hour."),
+    el("table", {}, el("tbody", {}, ...sourceRows(hazardRun, "hazard"))),
     el("h3", {}, "Map layers"),
     el(
       "table",
@@ -867,6 +992,55 @@ function openFeeds() {
     el("h3", {}, "What else can be connected"),
     el("table", {}, el("tbody", {}, ...CAN_JOIN.map(([kind, name, note]) => row(kind, name, note)))),
   );
+}
+
+function renderBrief(stored) {
+  if (!stored) {
+    return [el("p", {}, "No brief has been written yet. One is written every day at 12:03 UTC (7:03 in New York in winter), or you can write one now.")];
+  }
+  const brief = stored.body;
+  return [
+    el("p", { class: "note" }, `Written ${ago(stored.createdAt)}, covering the 24 hours before it.`),
+    el("div", { class: "brief-level" }, `Threat level: ${brief.threatLevel}`),
+    el("p", { class: "brief-headline" }, brief.headline),
+    el("p", {}, brief.overview),
+    ...brief.regions.flatMap((region) => [
+      el("h3", {}, region.name),
+      ...region.items.map((item) =>
+        el(
+          "div",
+          { class: "brief-item", style: `--sev:${BRIEF_COLORS[item.severity] ?? "var(--low)"}` },
+          el("div", { class: "tags" }, el("span", { class: "dot" }), el("span", { class: "sev" }, item.severity), el("span", {}, `· ${item.title}`)),
+          el("p", {}, item.detail),
+        ),
+      ),
+    ]),
+    ...(brief.watch.length ? [el("h3", {}, "Watch"), el("ul", { class: "brief-watch" }, ...brief.watch.map((entry) => el("li", {}, entry)))] : []),
+  ];
+}
+
+async function openBrief() {
+  const body = el("div", {}, el("p", { class: "note" }, "Loading…"));
+  const button = el("button", { class: "pill gold" }, "Write a new brief");
+  openDrawer("Morning brief", el("div", { class: "form-row" }, button), body);
+  const show = (stored) => body.replaceChildren(...renderBrief(stored));
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    button.textContent = "Writing… (up to a minute)";
+    try {
+      show((await api("/api/brief", { method: "POST" })).brief);
+    } catch (error) {
+      body.prepend(el("div", { class: "result error" }, error.message));
+    } finally {
+      button.disabled = false;
+      button.textContent = "Write a new brief";
+    }
+  });
+  try {
+    show((await api("/api/brief")).brief);
+  } catch (error) {
+    body.replaceChildren(el("div", { class: "result error" }, `Could not load the brief. ${error.message}`));
+  }
 }
 
 // ---------- wiring ----------
@@ -918,8 +1092,14 @@ document.getElementById("run-now").addEventListener("click", async (event) => {
   button.disabled = true;
   button.textContent = "Checking…";
   try {
-    await api("/api/run", { method: "POST" });
+    // Separate requests, so each stays inside Cloudflare's per-request limits.
+    const results = await Promise.allSettled([api("/api/run", { method: "POST" }), api("/api/hazards/run", { method: "POST" })]);
     await refresh();
+    for (const [index, result] of results.entries()) {
+      if (result.status === "rejected") {
+        document.getElementById("feed").prepend(el("div", { class: "empty error" }, `${index === 0 ? "News" : "Hazard"} check failed. ${result.reason.message}`));
+      }
+    }
   } catch (error) {
     document.getElementById("feed").prepend(el("div", { class: "empty error" }, `Check failed. ${error.message}`));
   } finally {

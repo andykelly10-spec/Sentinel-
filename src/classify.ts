@@ -7,6 +7,11 @@ import { WATCHLIST } from "./watchlist";
 
 export const BATCH_SIZE = 20;
 
+// When the model declines, the API retries on a fallback model in the same call.
+export function fallbackOptions(model: string) {
+  return FALLBACK_MODELS.has(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {};
+}
+
 // Models that accept the server-side refusal fallback parameter.
 const FALLBACK_MODELS = new Set([
   "claude-opus-5-5",
@@ -108,7 +113,6 @@ export async function classifyBatch(
   knownIncidents: string[],
   systemPrompt: string,
 ): Promise<Map<string, Classification>> {
-  const useFallback = FALLBACK_MODELS.has(model);
   const response = await client.beta.messages.parse({
     model,
     max_tokens: 16000,
@@ -116,7 +120,7 @@ export async function classifyBatch(
     system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: describe(batch, knownIncidents) }],
     output_config: { effort: "low", format: betaZodOutputFormat(ResultSchema) },
-    ...(useFallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+    ...fallbackOptions(model),
   });
 
   const byIndex = new Map<number, Classification>();

@@ -1,9 +1,9 @@
 const USER_AGENT = "sentinel-monitor/0.1 (brand security monitoring)";
 
-export async function getText(url: string): Promise<string> {
+export async function getText(url: string, timeoutMs = 15_000): Promise<string> {
   const response = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, Accept: "*/*" },
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);

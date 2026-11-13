@@ -16,7 +16,10 @@ export function createTestDb(): D1Database {
       bind: (...next: SQLInputValue[]) => statement(sql, next),
       all: async () => ({ results: sqlite.prepare(sql).all(...params) }),
       first: async () => sqlite.prepare(sql).get(...params) ?? null,
-      run: async () => ({ meta: { changes: Number(sqlite.prepare(sql).run(...params).changes) } }),
+      run: async () => {
+        const result = sqlite.prepare(sql).run(...params);
+        return { meta: { changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid) } };
+      },
     };
   };
 

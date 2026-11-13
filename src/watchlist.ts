@@ -27,6 +27,26 @@ export const WATCHLIST = {
   // Searched in news alongside each priority site's area.
   incidentTerms: ["active shooter", "shooting", "bomb threat", "explosion", "evacuation", "lockdown"],
 
+  // Certificate logs are searched for new domains containing these names.
+  // "strict" names are ordinary words too, so they only count next to a
+  // phishing word such as "login".
+  domainWatch: {
+    tokens: [
+      { term: "hbomax", strict: false },
+      { term: "paramountplus", strict: false },
+      { term: "warnerbros", strict: false },
+      { term: "cbsnews", strict: false },
+      { term: "skydance", strict: true },
+    ],
+    // Domains the company owns, which never count as lookalikes.
+    official: [
+      "skydance.com", "skydanceanimation.com", "skydancemedia.com", "skydancetv.com",
+      "hbomax.com", "max.com", "hbo.com", "paramountplus.com", "paramount.com", "paramountplus.tv",
+      "warnerbros.com", "wbd.com", "warnermedia.com", "wbgames.com", "cbsnews.com", "cbs.com", "cbsi.com",
+      "cnn.com", "pluto.tv",
+    ],
+  },
+
   // Searched everywhere on news and social media, then kept only when the
   // report mentions a city or place word belonging to one of the sites.
   urgentTerms: ["active shooter", "bomb threat", "shelter in place", "mass shooting"],
