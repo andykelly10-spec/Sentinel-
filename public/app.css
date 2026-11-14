@@ -269,6 +269,11 @@ select { font-size: 12px; padding: 4px 6px; border-radius: 4px; background: var(
 .tv-head a { font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); text-decoration: none; }
 .tv-head a:hover { color: var(--text); }
 .tv-tile iframe { display: block; width: 100%; aspect-ratio: 16 / 9; border: 0; background: #000; }
+.tv-stage { position: relative; }
+.tv-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 12px; text-align: center; background: rgba(7, 9, 11, 0.94); }
+.tv-error p { margin: 0; font-size: 13px; color: #c7cdd4; }
+.tv-error .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 4px; }
+.tv-error a.pill { text-decoration: none; }
 .headline-filters { margin-bottom: 8px; }
 .headlines { list-style: none; margin: 0; padding: 0; }
 .headlines li { padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }

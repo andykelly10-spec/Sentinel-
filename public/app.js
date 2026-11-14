@@ -1169,6 +1169,8 @@ function closeNewsroom() {
   panel.hidden = true;
   // Removing the players stops the streams.
   document.getElementById("newsroom-body").replaceChildren();
+  for (const screen of tvScreens.values()) clearInterval(screen.handshake);
+  tvScreens.clear();
   clearInterval(newsroom.timer);
 }
 
@@ -1196,6 +1198,111 @@ function openNewsroom(tab = newsroom.tab) {
 // The exact live video for each channel, looked up by the server.
 const liveVideos = {};
 const LIVE_REFRESH_MS = 15 * 60_000;
+const YOUTUBE = "https://www.youtube.com";
+// The screens on show, by player id, so YouTube's messages reach the right one.
+const tvScreens = new Map();
+const PLAYER_ERRORS = {
+  2: "the video link is not valid",
+  5: "this browser could not play it",
+  100: "the stream has ended or been taken down",
+  101: "the channel does not allow its stream to play on other websites",
+  150: "the channel does not allow its stream to play on other websites",
+  152: "the channel does not allow its stream to play on other websites",
+  153: "it could not confirm which website is showing it",
+};
+
+function embedUrl(channel, video) {
+  // enablejsapi lets the player tell this page when something goes wrong.
+  const params = `autoplay=1&mute=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`;
+  return video ? `${YOUTUBE}/embed/${video.videoId}?${params}` : `${YOUTUBE}/embed/live_stream?channel=${channel.channel}&${params}`;
+}
+
+const watchUrl = (screen) => (screen.video ? `${YOUTUBE}/watch?v=${screen.video.videoId}` : `${YOUTUBE}/channel/${screen.channel.channel}/live`);
+
+// YouTube's player reports events once the page says it is listening; it may
+// not be ready for the first few messages, so they are repeated briefly.
+function listenTo(screen) {
+  clearInterval(screen.handshake);
+  let tries = 0;
+  const send = (message) => screen.frame.contentWindow?.postMessage(JSON.stringify({ ...message, id: screen.id, channel: "widget" }), YOUTUBE);
+  screen.heard = false;
+  screen.handshake = setInterval(() => {
+    if (screen.heard || ++tries > 20 || !screen.frame.isConnected) return clearInterval(screen.handshake);
+    send({ event: "listening" });
+    send({ event: "command", func: "addEventListener", args: ["onError"] });
+  }, 500);
+}
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== YOUTUBE || typeof event.data !== "string") return;
+  let data;
+  try {
+    data = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  const screen = tvScreens.get(data.id);
+  if (!screen || !screen.frame.isConnected) return;
+  screen.heard = true;
+  if (data.event === "onError") screenFailed(screen, Number(data.info));
+});
+
+function showVideo(screen, video) {
+  screen.video = video;
+  screen.stage.querySelector(".tv-error")?.remove();
+  screen.frame.src = embedUrl(screen.channel, video);
+  screen.title.textContent = video?.title ?? "";
+  screen.title.title = video?.title ?? "";
+  screen.link.href = watchUrl(screen);
+}
+
+// The stream may simply have ended (breaking-news streams often do), so ask
+// for whatever the channel has live now before giving up.
+async function screenFailed(screen, code) {
+  if (screen.failing) return;
+  screen.failing = true;
+  if (!screen.retried) {
+    screen.retried = true;
+    try {
+      const { videos } = await api(`/api/live?channels=${screen.channel.id}&fresh=1`);
+      const video = videos[screen.channel.id] ?? null;
+      liveVideos[screen.channel.id] = { video, at: Date.now() };
+      if (video && video.videoId !== screen.video?.videoId) {
+        screen.failing = false;
+        return showVideo(screen, video);
+      }
+    } catch {
+      // Fall through to the message.
+    }
+  }
+  screen.stage.querySelector(".tv-error")?.remove();
+  screen.stage.append(
+    el(
+      "div",
+      { class: "tv-error", role: "status" },
+      el("strong", {}, `${screen.channel.name} won't play here right now`),
+      el("p", {}, `YouTube says ${PLAYER_ERRORS[code] ?? `there was a problem (error ${code})`}.`),
+      el(
+        "div",
+        { class: "actions" },
+        el("a", { class: "pill gold", href: watchUrl(screen), target: "_blank", rel: "noopener noreferrer" }, "Watch on YouTube ↗"),
+        el(
+          "button",
+          {
+            class: "pill",
+            onclick: () => {
+              screen.retried = false;
+              screen.failing = false;
+              showVideo(screen, screen.video);
+            },
+          },
+          "Try again",
+        ),
+      ),
+    ),
+  );
+  screen.failing = false;
+}
 
 function tvTile(slot, chosen) {
   const channel = CHANNELS.find((each) => each.id === chosen) ?? CHANNELS[slot];
@@ -1211,28 +1318,32 @@ function tvTile(slot, chosen) {
     saved.set("tvWall", wall);
     renderTvWall();
   });
-  return el(
-    "div",
-    { class: "tv-tile" },
-    el(
-      "div",
-      { class: "tv-head" },
-      select,
-      el("a", { href: video ? `https://www.youtube.com/watch?v=${video.videoId}` : `https://www.youtube.com/channel/${channel.channel}/live`, target: "_blank", rel: "noopener noreferrer" }, "YouTube ↗"),
-    ),
-    el("iframe", {
-      // The exact video when known; otherwise whatever the channel has live.
-      src: video
-        ? `https://www.youtube.com/embed/${video.videoId}?autoplay=1&mute=1&playsinline=1`
-        : `https://www.youtube.com/embed/live_stream?channel=${channel.channel}&autoplay=1&mute=1&playsinline=1`,
-      title: `${channel.name} live`,
-      allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
-      allowfullscreen: true,
-      // YouTube refuses to play embeds that arrive without a referrer.
-      referrerpolicy: "strict-origin-when-cross-origin",
-    }),
-    video?.title ? el("div", { class: "tv-title", title: video.title }, video.title) : null,
-  );
+  const id = `tv-${slot}-${Math.random().toString(36).slice(2, 8)}`;
+  const frame = el("iframe", {
+    id,
+    src: embedUrl(channel, video),
+    title: `${channel.name} live`,
+    allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
+    allowfullscreen: true,
+    // YouTube refuses to play embeds that arrive without a referrer.
+    referrerpolicy: "strict-origin-when-cross-origin",
+  });
+  const screen = {
+    id,
+    slot,
+    channel,
+    video,
+    frame,
+    stage: el("div", { class: "tv-stage" }, frame),
+    title: el("div", { class: "tv-title", title: video?.title ?? "" }, video?.title ?? ""),
+    link: el("a", { href: "#", target: "_blank", rel: "noopener noreferrer" }, "YouTube ↗"),
+    retried: false,
+    failing: false,
+  };
+  screen.link.href = watchUrl(screen);
+  tvScreens.set(id, screen);
+  frame.addEventListener("load", () => listenTo(screen));
+  return el("div", { class: "tv-tile", "data-channel": channel.id }, el("div", { class: "tv-head" }, select, screen.link), screen.stage, screen.title);
 }
 
 async function renderTvWall() {
@@ -1247,9 +1358,11 @@ async function renderTvWall() {
     }
     if (newsroom.tab !== "tv" || document.getElementById("newsroom").hidden) return;
   }
+  for (const screen of tvScreens.values()) clearInterval(screen.handshake);
+  tvScreens.clear();
   document.getElementById("newsroom-body").replaceChildren(
     el("div", { class: "tv-grid" }, ...[0, 1, 2, 3].map((slot) => tvTile(slot, wall[slot]))),
-    el("p", { class: "note" }, "Streams start muted; click a player for sound. If a channel is not broadcasting, its screen says so. Choose channels with the menus above each screen."),
+    el("p", { class: "note" }, "Streams start muted; click a player for sound. If a stream ends, its screen switches to whatever the channel is broadcasting now. Choose channels with the menus above each screen."),
   );
 }
 

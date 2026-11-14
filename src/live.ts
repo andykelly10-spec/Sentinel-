@@ -27,6 +27,11 @@ export interface LiveVideo {
 // The marker sits about 800 KB into the page; read no further than this.
 const MAX_CHARS = 1_300_000;
 const CACHE_MS = 15 * 60_000;
+// A failed lookup is retried sooner.
+const MISS_CACHE_MS = 2 * 60_000;
+// When a screen reports its video unavailable it asks again at once, but no
+// more than once a minute per channel.
+const FRESH_MIN_MS = 60_000;
 const MARKER = '<link rel="canonical"';
 
 // Reads the canonical link (/watch?v=<id> while live) and the title after it.
@@ -84,12 +89,19 @@ interface Cached {
 }
 
 // The live video for each requested channel (at most four: the TV wall's screens).
-export async function liveVideos(db: D1Database, keys: string[], now: Date = new Date()): Promise<Record<string, LiveVideo | null>> {
+export async function liveVideos(
+  db: D1Database,
+  keys: string[],
+  now: Date = new Date(),
+  fresh = false,
+): Promise<Record<string, LiveVideo | null>> {
   const wanted = [...new Set(keys)].filter((key) => key in TV_CHANNELS).slice(0, 4);
   const entries = await Promise.all(
     wanted.map(async (key) => {
       const cached = JSON.parse((await getSetting(db, `live:${key}`)) ?? "null") as Cached | null;
-      if (cached && now.getTime() - Date.parse(cached.fetchedAt) < CACHE_MS) return [key, cached.video] as const;
+      const age = cached ? now.getTime() - Date.parse(cached.fetchedAt) : Infinity;
+      const keep = fresh ? FRESH_MIN_MS : cached?.video ? CACHE_MS : MISS_CACHE_MS;
+      if (cached && age < keep) return [key, cached.video] as const;
       const video = await resolve(TV_CHANNELS[key]!).catch(() => null);
       await setSetting(db, `live:${key}`, JSON.stringify({ fetchedAt: now.toISOString(), video } satisfies Cached));
       return [key, video] as const;

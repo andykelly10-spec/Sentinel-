@@ -93,7 +93,8 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
   }
 
   if (request.method === "GET" && url.pathname === "/api/live") {
-    return json({ videos: await liveVideos(env.DB, (url.searchParams.get("channels") ?? "").split(",")) });
+    const fresh = url.searchParams.get("fresh") === "1";
+    return json({ videos: await liveVideos(env.DB, (url.searchParams.get("channels") ?? "").split(","), new Date(), fresh) });
   }
 
   if (request.method === "GET" && url.pathname === "/api/outages") {
