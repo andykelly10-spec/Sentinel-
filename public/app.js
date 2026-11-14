@@ -243,6 +243,28 @@ async function nearbyWebcams(lat, lon, miles) {
   }
 }
 
+// Links to live police, fire and EMS radio for the place (Broadcastify, OpenMHz).
+async function scannerInfo(lat, lon, holder) {
+  if (holder.dataset.loaded) return;
+  holder.dataset.loaded = "1";
+  let info;
+  try {
+    info = await api(`/api/scanner?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`);
+  } catch {
+    holder.dataset.loaded = "";
+    return;
+  }
+  const link = (entry) => {
+    const href = safeUrl(entry?.url, ["www.broadcastify.com", "openmhz.com"]);
+    return href ? el("li", {}, el("a", { href, target: "_blank", rel: "noopener noreferrer" }, `${entry.label} ↗`)) : null;
+  };
+  holder.replaceChildren(
+    el("div", { class: "label" }, "Police scanner"),
+    info.available ? el("ul", { class: "scanner-links" }, link(info.broadcastify), link(info.openmhz)) : null,
+    el("p", { class: "muted small" }, info.note),
+  );
+}
+
 // A short list of the open cameras closest to a point; choosing one shows it.
 async function nearbyCameras(lat, lon, holder) {
   const cameraLayer = LAYERS.find((layer) => layer.id === "cameras");
@@ -298,6 +320,7 @@ const LAYERS = [
         const icon = L.divIcon({ html: el("div", { class: site.priority ? "site-marker" : "site-marker minor" }), className: "", iconSize: [14, 14], iconAnchor: [7, 7] });
         const conditions = el("div", {}, el("p", { class: "muted" }, "Loading conditions…"));
         const cameras = el("div", {});
+        const scanner = el("div", { class: "scanner" });
         const marker = L.marker([site.lat, site.lon], { icon, title: site.name, zIndexOffset: 500 }).bindPopup(
           popup(
             site.priority ? "Priority site" : "Site",
@@ -306,11 +329,13 @@ const LAYERS = [
             site.approximate ? el("p", { class: "muted" }, "Position is approximate.") : null,
             conditions,
             cameras,
+            scanner,
           ),
         );
         marker.on("popupopen", () => {
           siteConditions(site, conditions);
           nearbyCameras(site.lat, site.lon, cameras);
+          scannerInfo(site.lat, site.lon, scanner);
         });
         group.addLayer(marker);
       }
@@ -329,6 +354,7 @@ const LAYERS = [
         count++;
         const live = item.status === "new" && rank(item.severity) >= rank("high");
         const cameras = el("div", {});
+        const scanner = el("div", { class: "scanner" });
         const icon = L.divIcon({ html: el("div", { class: `incident-marker sev-${item.severity}${live ? " live" : ""}` }), className: "", iconSize: [20, 20], iconAnchor: [10, 10] });
         const marker = L.marker([item.lat, item.lon], { icon, title: item.name, zIndexOffset: 1000 + rank(item.severity) }).bindPopup(
           popup(
@@ -338,9 +364,13 @@ const LAYERS = [
             proximity(item) ? el("p", {}, el("strong", {}, proximity(item))) : null,
             el("p", { class: "muted" }, `${item.reports.length} report${item.reports.length === 1 ? "" : "s"} · ${ago(item.latest)}`),
             cameras,
+            scanner,
           ),
         );
-        marker.on("popupopen", () => nearbyCameras(item.lat, item.lon, cameras));
+        marker.on("popupopen", () => {
+          nearbyCameras(item.lat, item.lon, cameras);
+          scannerInfo(item.lat, item.lon, scanner);
+        });
         item.marker = marker;
         group.addLayer(marker);
       }

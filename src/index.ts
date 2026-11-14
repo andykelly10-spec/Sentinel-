@@ -29,6 +29,7 @@ import { proxyFeed } from "./feeds";
 import { latestHeadlines } from "./headlines";
 import { liveVideos } from "./live";
 import { windyWebcams } from "./webcams";
+import { scannerLinks } from "./scanner";
 import { cachedAirRaidPicture } from "./hazards/airRaids";
 import { activeLocation, clearMyLocation, updateMyLocation, validUpdate } from "./me";
 import { runHazards, runOutages } from "./hazards";
@@ -91,6 +92,16 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
 
   if (request.method === "GET" && url.pathname === "/api/headlines") {
     return json(await latestHeadlines(env.DB));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/scanner") {
+    const lat = Number(url.searchParams.get("lat"));
+    const lon = Number(url.searchParams.get("lon"));
+    if (!url.searchParams.get("lat") || !url.searchParams.get("lon") || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+      return json({ error: "lat and lon are required" }, 400);
+    }
+    // Rounded so nearby requests share one cached answer.
+    return json(await scannerLinks(env.DB, Math.round(lat * 100) / 100, Math.round(lon * 100) / 100));
   }
 
   if (request.method === "GET" && url.pathname === "/api/webcams") {
