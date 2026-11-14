@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { listAlerts } from "../src/db";
 import { runOutages } from "../src/hazards";
-import { decodeText, outageItems, parseIoda, PROVIDERS, type OutagePicture } from "../src/hazards/outages";
+import { decodeText, minutes, nationalStop, outageItems, parseFaa, parseIoda, PROVIDERS, type OutagePicture } from "../src/hazards/outages";
 import { OUTAGE_CRON } from "../src/schedule";
 import type { Site } from "../src/types";
 import { createEnv, NOW } from "./helpers";
@@ -101,6 +101,47 @@ describe("internet outages", () => {
   });
 });
 
+const FAA = JSON.stringify([
+  {
+    airportId: "ATL", airportLongName: "Hartsfield-Jackson Atlanta International", latitude: "33.6407", longitude: "-84.4277",
+    groundStop: null, groundDelay: null, airportClosure: null, arrivalDelay: null,
+    departureDelay: { reason: "OTHER: NATIONAL STOP", arrivalDeparture: { type: "Departure", min: "3 hours and 1 minute", max: "3 hours and 15 minutes" }, averageDelay: "180" },
+  },
+  {
+    airportId: "ORD", airportLongName: "Chicago O'Hare International", latitude: "41.9786", longitude: "-87.9048",
+    departureDelay: { reason: "EQ:FAA", arrivalDeparture: { max: "5 hours and 15 minutes" } },
+  },
+  { airportId: "BOS", airportLongName: "Logan International", latitude: "42.3656", longitude: "-71.0096", groundDelay: { impactingCondition: "airport volume", avgDelay: 26, endTime: "2026-11-14T02:59:00Z" } },
+  { airportId: "BDL", airportLongName: "Bradley International", latitude: "41.939", longitude: "-72.6869", freeForm: { text: "TO NON SKED INTL AIR CARRIERS" } },
+]);
+
+describe("US airports", () => {
+  it("reads stops, delays and closures, and spots a nationwide stop", () => {
+    expect(minutes("3 hours and 1 minute")).toBe(181);
+    expect(minutes("45 minutes")).toBe(45);
+    expect(minutes("180")).toBe(180);
+    const issues = parseFaa(FAA);
+    expect(issues.map((issue) => [issue.code, issue.kind, issue.reason, issue.delayMinutes])).toEqual([
+      ["ATL", "departure delays", "OTHER: NATIONAL STOP", 180],
+      ["ORD", "departure delays", "EQ:FAA", 315],
+      ["BOS", "ground delay", "airport volume", 26],
+    ]);
+    expect(nationalStop(issues)).toBe(true);
+    expect(nationalStop(issues.slice(1))).toBe(false);
+  });
+
+  it("raises a nationwide stop, and long delays at airports near a site", async () => {
+    const atlantaSite: Site = { id: 3, name: "Turner campus", address: "", city: "Atlanta", country: "US", lat: 33.79, lon: -84.39, area: "", keywords: "", priority: true, approximate: false, nws_zones: "", region: "" };
+    const picture: OutagePicture = { updatedAt: NOW.toISOString(), providers: [], internet: [], internetError: null, airports: parseFaa(FAA), airportError: null };
+    const items = await outageItems(picture, [atlantaSite], NOW);
+    expect(items.map((item) => [item.title, item.severity, item.category, item.site])).toEqual([
+      ["FAA nationwide ground stop: US flights halted", "high", "cyber", ""],
+      ["ATL departure delays (3 h): Hartsfield-Jackson Atlanta International", "medium", "hazard", "Turner campus"],
+    ]);
+    expect(items[0]!.summary).toContain("affecting 3 major airports (reasons given: OTHER: NATIONAL STOP; EQ:FAA; airport volume)");
+  });
+});
+
 describe("outage alerts", () => {
   const accra: Site = { id: 1, name: "Accra office", address: "", city: "Accra", country: "GH", lat: 5.6, lon: -0.19, area: "", keywords: "", priority: true, approximate: false, nws_zones: "", region: "" };
   const helsinki: Site = { ...accra, id: 2, name: "Helsinki office", country: "FI", lat: 60.17, lon: 24.94 };
@@ -111,6 +152,8 @@ describe("outage alerts", () => {
       providers: [{ name: "Cloudflare", what: "", page: "", error: null, outages: provider("Cloudflare").parse(STATUSPAGE) }],
       internet: parseIoda(IODA),
       internetError: null,
+      airports: [],
+      airportError: null,
     };
     const items = await outageItems(picture, [accra, helsinki], NOW);
     expect(items.map((item) => [item.title, item.severity, item.category, item.site])).toEqual([

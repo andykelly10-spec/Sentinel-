@@ -1114,6 +1114,28 @@ async function renderOutages() {
           );
         }),
       ),
+      el("h3", {}, "US airports · FAA"),
+      data.airportError
+        ? el("p", { class: "note" }, `Not answering just now: ${data.airportError}.`)
+        : (data.airports ?? []).length
+          ? el(
+              "ul",
+              { class: "services" },
+              ...data.airports.map((issue) =>
+                el(
+                  "li",
+                  { class: `service ${issue.kind === "ground stop" || issue.kind === "closure" || /NATION/i.test(issue.reason) ? "down" : (issue.delayMinutes ?? 0) >= 60 ? "partial" : "minor"}` },
+                  el(
+                    "div",
+                    { class: "service-head" },
+                    el("span", { class: "light", "aria-hidden": "true" }),
+                    el("strong", {}, issue.code),
+                    el("span", { class: "what" }, `${issue.name} · ${issue.kind}${issue.delayMinutes ? ` · avg ${issue.delayMinutes} min` : ""}${issue.reason ? ` · ${issue.reason}` : ""}`),
+                  ),
+                ),
+              ),
+            )
+          : el("p", { class: "note" }, "No ground stops, closures or major delays reported."),
       el("h3", {}, "Country-wide internet outages · IODA"),
       data.internetError
         ? el("p", { class: "note" }, `Not answering just now: ${data.internetError}.`)
@@ -1171,8 +1193,13 @@ function openNewsroom(tab = newsroom.tab) {
   }
 }
 
+// The exact live video for each channel, looked up by the server.
+const liveVideos = {};
+const LIVE_REFRESH_MS = 15 * 60_000;
+
 function tvTile(slot, chosen) {
   const channel = CHANNELS.find((each) => each.id === chosen) ?? CHANNELS[slot];
+  const video = liveVideos[channel.id]?.video ?? null;
   const select = el(
     "select",
     { "aria-label": `Channel for screen ${slot + 1}` },
@@ -1191,21 +1218,35 @@ function tvTile(slot, chosen) {
       "div",
       { class: "tv-head" },
       select,
-      el("a", { href: `https://www.youtube.com/channel/${channel.channel}/live`, target: "_blank", rel: "noopener noreferrer" }, "YouTube ↗"),
+      el("a", { href: video ? `https://www.youtube.com/watch?v=${video.videoId}` : `https://www.youtube.com/channel/${channel.channel}/live`, target: "_blank", rel: "noopener noreferrer" }, "YouTube ↗"),
     ),
     el("iframe", {
-      src: `https://www.youtube.com/embed/live_stream?channel=${channel.channel}&autoplay=1&mute=1&playsinline=1`,
+      // The exact video when known; otherwise whatever the channel has live.
+      src: video
+        ? `https://www.youtube.com/embed/${video.videoId}?autoplay=1&mute=1&playsinline=1`
+        : `https://www.youtube.com/embed/live_stream?channel=${channel.channel}&autoplay=1&mute=1&playsinline=1`,
       title: `${channel.name} live`,
       allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
       allowfullscreen: true,
       // YouTube refuses to play embeds that arrive without a referrer.
       referrerpolicy: "strict-origin-when-cross-origin",
     }),
+    video?.title ? el("div", { class: "tv-title", title: video.title }, video.title) : null,
   );
 }
 
-function renderTvWall() {
+async function renderTvWall() {
   const wall = saved.get("tvWall", CHANNELS.slice(0, 4).map((each) => each.id));
+  const stale = wall.filter((id) => !liveVideos[id] || Date.now() - liveVideos[id].at > LIVE_REFRESH_MS);
+  if (stale.length) {
+    try {
+      const { videos } = await api(`/api/live?channels=${stale.join(",")}`);
+      for (const [id, video] of Object.entries(videos)) liveVideos[id] = { video, at: Date.now() };
+    } catch {
+      // The screens fall back to the channel's own live link.
+    }
+    if (newsroom.tab !== "tv" || document.getElementById("newsroom").hidden) return;
+  }
   document.getElementById("newsroom-body").replaceChildren(
     el("div", { class: "tv-grid" }, ...[0, 1, 2, 3].map((slot) => tvTile(slot, wall[slot]))),
     el("p", { class: "note" }, "Streams start muted; click a player for sound. If a channel is not broadcasting, its screen says so. Choose channels with the menus above each screen."),

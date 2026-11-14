@@ -9,7 +9,7 @@ import { stripHtml, truncate } from "../text";
 import type { HazardItem, Severity, Site } from "../types";
 import { getText } from "../sources/http";
 import { rssItems, tagText } from "../sources/rss";
-import { hazardItem, HOUR_MS } from "./common";
+import { hazardItem, HOUR_MS, nearestSite } from "./common";
 
 export interface Outage {
   provider: string;
@@ -269,6 +269,66 @@ export function parseIoda(body: string): InternetOutage[] {
   return [...byCountry.values()].sort((a, b) => b.signals.length - a.signals.length || a.country.localeCompare(b.country));
 }
 
+// ---------- US airports (FAA National Airspace System status) ----------
+
+export const FAA_URL = "https://nasstatus.faa.gov/api/airport-events";
+
+export interface AirportIssue {
+  code: string;
+  name: string;
+  lat: number;
+  lon: number;
+  kind: "ground stop" | "ground delay" | "closure" | "departure delays" | "arrival delays";
+  reason: string;
+  delayMinutes: number | null;
+  until: string | null;
+}
+
+// "3 hours and 1 minute" → 181.
+export function minutes(text: unknown): number | null {
+  if (typeof text === "number") return text;
+  if (typeof text !== "string" || !text) return null;
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+  const hours = Number(text.match(/(\d+)\s*hour/)?.[1] ?? 0);
+  const mins = Number(text.match(/(\d+)\s*minute/)?.[1] ?? 0);
+  return hours || mins ? hours * 60 + mins : null;
+}
+
+type Fields = Record<string, unknown> | null | undefined;
+const reasonOf = (item: Fields) =>
+  String(item?.impactingCondition ?? item?.reason ?? item?.text ?? item?.simpleText ?? "").trim();
+
+export function parseFaa(body: string): AirportIssue[] {
+  const issues: AirportIssue[] = [];
+  for (const airport of JSON.parse(body) as Array<Record<string, unknown>>) {
+    const base = {
+      code: String(airport.airportId ?? ""),
+      name: String(airport.airportLongName ?? airport.airportId ?? ""),
+      lat: Number(airport.latitude),
+      lon: Number(airport.longitude),
+    };
+    if (!base.code) continue;
+    const add = (kind: AirportIssue["kind"], item: Fields, delay: unknown) =>
+      issues.push({ ...base, kind, reason: reasonOf(item), delayMinutes: minutes(delay), until: (item?.endTime as string | undefined) ?? null });
+    const stop = airport.groundStop as Fields;
+    const gdp = airport.groundDelay as Fields;
+    const closure = airport.airportClosure as Fields;
+    const departures = airport.departureDelay as Fields;
+    const arrivals = airport.arrivalDelay as Fields;
+    if (stop) add("ground stop", stop, null);
+    if (gdp) add("ground delay", gdp, gdp.avgDelay);
+    if (closure) add("closure", closure, null);
+    if (departures) add("departure delays", departures, departures.averageDelay ?? (departures.arrivalDeparture as Fields)?.max);
+    if (arrivals) add("arrival delays", arrivals, arrivals.averageDelay ?? (arrivals.arrivalDeparture as Fields)?.max);
+  }
+  return issues;
+}
+
+// A nationwide stop shows up as "NATIONAL STOP" reasons, or as ground stops everywhere at once.
+export function nationalStop(issues: AirportIssue[]): boolean {
+  return issues.some((issue) => /NATION(AL|WIDE)/i.test(issue.reason)) || issues.filter((issue) => issue.kind === "ground stop").length >= 8;
+}
+
 // ---------- the combined picture ----------
 
 export interface ProviderStatus {
@@ -284,14 +344,17 @@ export interface OutagePicture {
   providers: ProviderStatus[];
   internet: InternetOutage[];
   internetError: string | null;
+  airports: AirportIssue[];
+  airportError: string | null;
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export async function outagePicture(now: Date): Promise<OutagePicture> {
-  const [results, ioda] = await Promise.all([
+  const [results, ioda, faa] = await Promise.all([
     Promise.allSettled(PROVIDERS.map(async (provider) => provider.parse(provider.bytes ? await fetchBytes(provider.url) : await getText(provider.url)))),
     getText(IODA_URL(now)).then(parseIoda, (error: unknown) => message(error)),
+    getText(FAA_URL).then(parseFaa, (error: unknown) => message(error)),
   ]);
   return {
     updatedAt: now.toISOString(),
@@ -307,6 +370,8 @@ export async function outagePicture(now: Date): Promise<OutagePicture> {
     }),
     internet: typeof ioda === "string" ? [] : ioda,
     internetError: typeof ioda === "string" ? ioda : null,
+    airports: typeof faa === "string" ? [] : faa,
+    airportError: typeof faa === "string" ? faa : null,
   };
 }
 
@@ -362,6 +427,61 @@ export async function outageItems(picture: OutagePicture, sites: Site[], now: Da
       );
     }
   }
+  // US air travel: a nationwide ground stop, and serious disruption at airports near sites.
+  const airports = picture.airports ?? [];
+  if (nationalStop(airports)) {
+    const reasons = [...new Set(airports.map((issue) => issue.reason).filter(Boolean))].slice(0, 4).join("; ");
+    const day = now.toISOString().slice(0, 10);
+    const technical = airports.some((issue) => /EQ:|EQUIPMENT|COMM|OUTAGE|SYSTEM/i.test(issue.reason));
+    items.push(
+      await hazardItem({
+        key: `faa:national:${day}`,
+        source: "outages",
+        category: technical ? "cyber" : "hazard",
+        severity: "high",
+        title: "FAA nationwide ground stop: US flights halted",
+        summary: truncate(
+          `The FAA's airport status shows a national stop affecting ${new Set(airports.map((issue) => issue.code)).size} major airports${reasons ? ` (reasons given: ${reasons})` : ""}. Expect cancellations and long delays for staff travel across the US.`,
+          600,
+        ),
+        incident: `FAA national ground stop, ${day}`,
+        url: "https://nasstatus.faa.gov/",
+        author: "FAA National Airspace System status",
+        publishedAt: now.toISOString(),
+        place: "United States",
+        expiresAt,
+        ongoing: true,
+      }),
+    );
+  }
+  for (const issue of airports) {
+    const serious = issue.kind === "ground stop" || issue.kind === "closure" || (issue.delayMinutes ?? 0) >= 90;
+    if (!serious || !Number.isFinite(issue.lat) || !Number.isFinite(issue.lon)) continue;
+    const near = nearestSite(sites, issue.lat, issue.lon, 30);
+    if (!near) continue;
+    items.push(
+      await hazardItem({
+        key: `faa:${issue.code}:${issue.kind}:${now.toISOString().slice(0, 10)}`,
+        source: "outages",
+        category: "hazard",
+        severity: "medium",
+        title: `${issue.code} ${issue.kind}${issue.delayMinutes ? ` (${Math.round(issue.delayMinutes / 60 * 10) / 10} h)` : ""}: ${issue.name}`,
+        summary: truncate(`${issue.name} (${issue.code}) has ${issue.kind}${issue.delayMinutes ? ` averaging ${issue.delayMinutes} minutes` : ""}${issue.reason ? ` (${issue.reason})` : ""}. It is ${near.miles.toFixed(0)} miles from ${near.site.name}.`, 500),
+        incident: `${issue.code} ${issue.kind}`,
+        url: "https://nasstatus.faa.gov/",
+        author: "FAA National Airspace System status",
+        publishedAt: now.toISOString(),
+        place: issue.name,
+        lat: issue.lat,
+        lon: issue.lon,
+        site: near.site.name,
+        distanceMi: near.miles,
+        expiresAt,
+        ongoing: true,
+      }),
+    );
+  }
+
   for (const outage of picture.internet) {
     // Google's traffic signal alone gives false alarms; routing or probing must agree.
     if (!outage.signals.some((signal) => RELIABLE_SIGNALS.includes(signal))) continue;
@@ -395,6 +515,6 @@ export async function outageItems(picture: OutagePicture, sites: Site[], now: Da
 export async function outageHazards(db: D1Database, sites: Site[], now: Date): Promise<HazardItem[]> {
   const picture = await outagePicture(now);
   await setSetting(db, CACHE_KEY, JSON.stringify(picture));
-  if (picture.providers.every((provider) => provider.error) && picture.internetError) throw new Error("No outage source answered");
+  if (picture.providers.every((provider) => provider.error) && picture.internetError && picture.airportError) throw new Error("No outage source answered");
   return outageItems(picture, sites, now);
 }
