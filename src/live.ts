@@ -42,11 +42,20 @@ export function liveFromHead(head: string): LiveVideo | null {
   return { videoId, title };
 }
 
+// YouTube sometimes answers with a "confirm you're not a bot" page instead
+// (its canonical link then reads "undefined"), and which address it does
+// that for varies, so the mobile address is tried as well.
+const ADDRESSES = (channelId: string) => [
+  `https://www.youtube.com/channel/${channelId}/live`,
+  `https://m.youtube.com/channel/${channelId}/live`,
+];
+
 // Scans the page as it arrives, keeping only the text from the marker on.
-async function resolve(channelId: string): Promise<LiveVideo | null> {
-  const response = await fetch(`https://www.youtube.com/channel/${channelId}/live`, {
+async function readLivePage(url: string): Promise<LiveVideo | null> {
+  const response = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml",
       "Accept-Language": "en-US,en;q=0.9",
       Cookie: "CONSENT=YES+1",
     },
@@ -83,9 +92,19 @@ async function resolve(channelId: string): Promise<LiveVideo | null> {
   return found ? liveFromHead(found) : null;
 }
 
+async function resolve(channelId: string): Promise<LiveVideo | null> {
+  for (const url of ADDRESSES(channelId)) {
+    const video = await readLivePage(url).catch(() => null);
+    if (video) return video;
+  }
+  return null;
+}
+
 interface Cached {
   fetchedAt: string;
   video: LiveVideo | null;
+  // False when the last lookup failed and `video` is the last one that worked.
+  ok: boolean;
 }
 
 // The live video for each requested channel (at most four: the TV wall's screens).
@@ -100,11 +119,13 @@ export async function liveVideos(
     wanted.map(async (key) => {
       const cached = JSON.parse((await getSetting(db, `live:${key}`)) ?? "null") as Cached | null;
       const age = cached ? now.getTime() - Date.parse(cached.fetchedAt) : Infinity;
-      const keep = fresh ? FRESH_MIN_MS : cached?.video ? CACHE_MS : MISS_CACHE_MS;
+      const keep = fresh ? FRESH_MIN_MS : cached?.ok ? CACHE_MS : MISS_CACHE_MS;
       if (cached && age < keep) return [key, cached.video] as const;
-      const video = await resolve(TV_CHANNELS[key]!).catch(() => null);
-      await setSetting(db, `live:${key}`, JSON.stringify({ fetchedAt: now.toISOString(), video } satisfies Cached));
-      return [key, video] as const;
+      const found = await resolve(TV_CHANNELS[key]!).catch(() => null);
+      // A failed lookup (YouTube sometimes blocks them) keeps the last video that worked.
+      const entry: Cached = { fetchedAt: now.toISOString(), video: found ?? cached?.video ?? null, ok: found !== null };
+      await setSetting(db, `live:${key}`, JSON.stringify(entry));
+      return [key, entry.video] as const;
     }),
   );
   return Object.fromEntries(entries);
