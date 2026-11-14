@@ -105,7 +105,45 @@ const SYSTEMS_511 = {
   wi: ["511 Wisconsin", "511wi.gov"],
   on: ["Ontario 511", "511on.ca"],
   ab: ["Alberta 511", "511.alberta.ca"],
+  id: ["Idaho 511", "511.idaho.gov"],
+  ak: ["Alaska 511", "511.alaska.gov"],
 };
+
+// Wildfire cameras look out over miles of hillside; a still from the last day is kept.
+function parseWildfire(text) {
+  const dayAgo = Date.now() / 1000 - 86_400;
+  return (JSON.parse(text).features ?? []).flatMap((feature) => {
+    const props = feature.properties ?? {};
+    const id = String(props.id ?? "");
+    if (!/^[\w-]+$/.test(id) || (props.last_frame_ts && props.last_frame_ts < dayAgo)) return [];
+    const [lon, lat] = feature.geometry?.coordinates ?? [];
+    const entry = camera("ALERTCalifornia", lat, lon, props.name, `https://cameras.alertcalifornia.org/public-camera-data/${id}/latest-frame.jpg`, "https://cameras.alertcalifornia.org/");
+    return entry ? { ...entry, kind: "wildfire" } : [];
+  });
+}
+
+function parseNewZealand(text) {
+  return (JSON.parse(text).features ?? []).flatMap((feature) => {
+    const props = feature.properties ?? {};
+    if (props.Offline || props.UnderMaintenance) return [];
+    const [lon, lat] = feature.geometry?.coordinates ?? [];
+    return camera("NZ Transport Agency", lat, lon, props.Name, httpsUrl(props.ImageUrl, ["www.trafficnz.info"])) ?? [];
+  });
+}
+
+// Spain's national road cameras, published as DATEX II.
+function parseSpain(text) {
+  return Array.from(text.matchAll(/<ns2:device [^>]*id="(\d+)"[\s\S]*?<\/ns2:device>/g), ([block, id]) => {
+    const lat = block.match(/<loc:latitude>([^<]+)</)?.[1];
+    const lon = block.match(/<loc:longitude>([^<]+)</)?.[1];
+    const road = block.match(/<loc:roadName>([^<]+)</)?.[1] ?? "";
+    const toward = block.match(/<loc:roadDestination>([^<]+)</)?.[1] ?? "";
+    const km = block.match(/<lse:kilometerPoint>([^<]+)</)?.[1];
+    const image = httpsUrl(block.match(/<fse:deviceUrl>([^<]+)</)?.[1], ["etraffic.dgt.es"]) ?? `https://etraffic.dgt.es/camarasEtraffic/${id}.jpg`;
+    const name = [road, km ? `km ${km}` : "", toward ? `toward ${toward}` : ""].filter(Boolean).join(" ");
+    return camera("DGT (Spain)", lat, lon, name || `Camera ${id}`, image);
+  }).filter(Boolean);
+}
 
 function parse511(system) {
   const [owner, host] = SYSTEMS_511[system];
@@ -154,7 +192,15 @@ export const CAMERA_FEEDS = [
   { id: "bay-area", place: "San Francisco Bay Area", region: [36.9, -123.2, 38.5, -121.6], url: "/api/feeds/cameras-caltrans?district=4", parse: parseCaltrans },
   { id: "sacramento", place: "Sacramento", region: [38.2, -122.0, 39.4, -120.0], url: "/api/feeds/cameras-caltrans?district=3", parse: parseCaltrans },
   { id: "new-york", place: "New York", region: [40.45, -74.3, 40.95, -73.65], url: "/api/feeds/cameras-nyc", parse: parseNewYork },
-  { id: "seattle", place: "Seattle area", region: [47.3, -122.6, 47.9, -121.9], url: "/api/feeds/cameras-seattle", parse: parseSeattle },
+  { id: "seattle", place: "Washington State", region: [45.5, -124.8, 49.0, -116.9], url: "/api/feeds/cameras-seattle", parse: parseSeattle },
+  { id: "inland-empire", place: "Inland Empire (Riverside, San Bernardino)", region: [33.4, -117.8, 35.8, -114.1], url: "/api/feeds/cameras-caltrans?district=8", parse: parseCaltrans },
+  { id: "san-diego", place: "San Diego", region: [32.5, -117.6, 33.5, -114.4], url: "/api/feeds/cameras-caltrans?district=11", parse: parseCaltrans },
+  { id: "orange-county", place: "Orange County", region: [33.35, -118.15, 33.95, -117.4], url: "/api/feeds/cameras-caltrans?district=12", parse: parseCaltrans },
+  { id: "wildfire-california", place: "California wildfire cameras", region: [32.5, -124.5, 42.0, -114.1], url: "/api/feeds/cameras-wildfire", parse: parseWildfire },
+  { id: "idaho", place: "Idaho", region: [42.0, -117.3, 49.0, -111.0], url: "/api/feeds/cameras-511?system=id", parse: parse511("id") },
+  { id: "alaska", place: "Alaska", region: [51.0, -180.0, 71.5, -129.9], url: "/api/feeds/cameras-511?system=ak", parse: parse511("ak") },
+  { id: "new-zealand", place: "New Zealand", region: [-47.5, 166.0, -34.0, 179.0], url: "/api/feeds/cameras-nz", parse: parseNewZealand },
+  { id: "spain", place: "Spain (national roads)", region: [35.9, -9.4, 43.8, 3.4], url: "/api/feeds/cameras-spain", parse: parseSpain },
   { id: "maryland", place: "Maryland and the Washington suburbs", region: [37.9, -79.5, 39.75, -75.0], url: "/api/feeds/cameras-maryland", parse: parseMaryland },
   { id: "sydney", place: "Sydney", region: [-34.3, 150.5, -33.4, 151.5], url: "/api/feeds/cameras-sydney", parse: parseSydney },
   { id: "singapore", place: "Singapore", region: [1.15, 103.6, 1.48, 104.1], url: "/api/feeds/cameras-singapore", parse: parseSingapore },

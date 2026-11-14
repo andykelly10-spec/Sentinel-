@@ -27,11 +27,14 @@ export const SYSTEMS_511: Record<string, string> = {
   wi: "511wi.gov",
   on: "511on.ca",
   ab: "511.alberta.ca",
+  id: "511.idaho.gov",
+  ak: "511.alaska.gov",
 };
 
 // Caltrans publishes one camera list per district: 3 is Sacramento, 4 the
 // Bay Area and 7 Los Angeles.
-const CALTRANS_DISTRICTS = ["3", "4", "7"];
+// Districts 8 (Inland Empire), 11 (San Diego) and 12 (Orange County) too.
+const CALTRANS_DISTRICTS = ["3", "4", "7", "8", "11", "12"];
 
 function coordinates(params: URLSearchParams): { lat: string; lon: string } | null {
   const lat = Number(params.get("lat"));
@@ -72,6 +75,20 @@ const FEEDS: Record<string, Feed> = {
     },
     maxAge: 3600,
   },
+  // ALERTCalifornia (UC San Diego): mountaintop wildfire cameras.
+  "cameras-wildfire": {
+    url: () => "https://cameras.alertcalifornia.org/public-camera-data/all_cameras-v3.json",
+    maxAge: 1800,
+  },
+  "cameras-nz": {
+    url: () => "https://www.journeys.nzta.govt.nz/assets/map-data-cache/cameras.json",
+    maxAge: 3600,
+  },
+  "cameras-spain": {
+    url: () => "https://nap.dgt.es/datex2/v3/dgt/DevicePublication/camaras_datex2_v36.xml",
+    maxAge: 86_400,
+    type: "application/xml",
+  },
   "cameras-bc": {
     url: () => "https://www.drivebc.ca/api/webcams/",
     maxAge: 3600,
@@ -87,8 +104,7 @@ const FEEDS: Record<string, Feed> = {
   "cameras-seattle": {
     url: () =>
       "https://data.wsdot.wa.gov/arcgis/rest/services/TravelInformation/TravelInfoCamerasWeather/FeatureServer/0/query" +
-      "?where=1%3D1&outFields=CameraTitle,ImageURL&outSR=4326&f=json&geometry=-122.6,47.3,-121.9,47.9" +
-      "&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects",
+      "?where=1%3D1&outFields=CameraTitle,ImageURL&outSR=4326&f=json",
     maxAge: 900,
   },
   "cameras-maryland": {

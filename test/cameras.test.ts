@@ -149,3 +149,33 @@ describe("more camera systems", () => {
     expect(feedsForSites([atlanta]).map((feed) => feed.id)).toEqual(["georgia"]);
   });
 });
+
+describe("wildfire, New Zealand and Spain cameras", () => {
+  it("reads ALERTCalifornia, dropping cameras with no frame in a day", () => {
+    const now = Date.now() / 1000;
+    const cam = (id: string, last: number) => ({ type: "Feature", geometry: { type: "Point", coordinates: [-118.620451, 34.122602, 534] }, properties: { id, name: "Africa Lookout 1", last_frame_ts: last } });
+    expect(parse("wildfire-california", { features: [cam("africalookout-cam01", now - 60), cam("old-cam", now - 200_000), cam("../x", now)] })).toEqual([
+      {
+        owner: "ALERTCalifornia", kind: "wildfire", lat: 34.122602, lon: -118.620451, name: "Africa Lookout 1",
+        image: "https://cameras.alertcalifornia.org/public-camera-data/africalookout-cam01/latest-frame.jpg", link: "https://cameras.alertcalifornia.org/",
+      },
+    ]);
+  });
+
+  it("reads New Zealand's cameras, skipping offline ones", () => {
+    const cam = (offline: number) => ({ type: "Feature", geometry: { type: "Point", coordinates: [174.76, -36.85] }, properties: { Name: "SH1 Harbour Bridge", Offline: offline, UnderMaintenance: 0, ImageUrl: "https://www.trafficnz.info/camera/706.jpg" } });
+    expect(parse("new-zealand", { features: [cam(0), cam(1)] })).toEqual([
+      { owner: "NZ Transport Agency", lat: -36.85, lon: 174.76, name: "SH1 Harbour Bridge", image: "https://www.trafficnz.info/camera/706.jpg", link: null },
+    ]);
+  });
+
+  it("reads Spain's DATEX II camera list", () => {
+    const xml = `<d2:payload><ns2:device xsi:type="fse:ExtendedDevice" id="176130" version="2"><ns2:typeOfDevice>camera</ns2:typeOfDevice>
+      <loc:roadInformation><loc:roadDestination>BURGOS</loc:roadDestination><loc:roadName>A-62</loc:roadName></loc:roadInformation>
+      <loc:pointCoordinates><loc:latitude>42.2624</loc:latitude><loc:longitude>-3.9403</loc:longitude></loc:pointCoordinates>
+      <lse:kilometerPoint>25.3</lse:kilometerPoint><fse:deviceUrl>https://etraffic.dgt.es/camarasEtraffic/176130.jpg</fse:deviceUrl></ns2:device></d2:payload>`;
+    expect(parse("spain", xml)).toEqual([
+      { owner: "DGT (Spain)", lat: 42.2624, lon: -3.9403, name: "A-62 km 25.3 toward BURGOS", image: "https://etraffic.dgt.es/camarasEtraffic/176130.jpg", link: null },
+    ]);
+  });
+});

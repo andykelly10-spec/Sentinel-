@@ -218,12 +218,15 @@ function cameraView(each) {
   if (each.owner === "Windy") return webcamView(each);
   const note = [each.owner, each.nearSite ? `${each.siteMiles.toFixed(1)} mi from ${each.nearSite}` : null].filter(Boolean).join(" · ");
   return popup(
-    "Traffic camera",
+    each.kind === "wildfire" ? "Wildfire camera" : "Traffic camera",
     each.name,
     el("p", { class: "muted" }, note),
     each.image
       ? el("img", { src: `${each.image}${each.image.includes("?") ? "&" : "?"}t=${Date.now()}`, alt: `Live view from ${each.name}`, referrerpolicy: "no-referrer" })
       : el("p", {}, el("a", { href: each.link, target: "_blank", rel: "noopener noreferrer" }, "Open the live video")),
+    each.kind === "wildfire" && each.link
+      ? el("p", { class: "credit" }, "From ", el("a", { href: each.link, target: "_blank", rel: "noopener noreferrer" }, "ALERTCalifornia"), " (UC San Diego). Updated about every minute.")
+      : null,
   );
 }
 
@@ -554,7 +557,7 @@ const LAYERS = [
   },
   {
     id: "cameras",
-    label: "Traffic cameras around your sites",
+    label: "Traffic and wildfire cameras around your sites",
     icon: "M3 8h3l2-3h8l2 3h3v11H3zM12 17a4 4 0 100-8 4 4 0 000 8z",
     on: true,
     every: 1800,
@@ -581,9 +584,10 @@ const LAYERS = [
       for (const each of state.cameras) {
         if (each.nearSite) nearSites++;
         // Cameras that cover a site stand out; the rest stay in the background.
+        const colour = each.kind === "wildfire" ? "#ff8d5c" : "#1fd67a";
         const style = each.nearSite
-          ? { radius: 5, color: "#04130b", weight: 1, fillColor: "#1fd67a", fillOpacity: 0.95 }
-          : { radius: 3, stroke: false, fillColor: "#1fd67a", fillOpacity: 0.35 };
+          ? { radius: 5, color: "#04130b", weight: 1, fillColor: colour, fillOpacity: 0.95 }
+          : { radius: each.kind === "wildfire" ? 4 : 3, stroke: false, fillColor: colour, fillOpacity: each.kind === "wildfire" ? 0.7 : 0.35 };
         // The image is only requested when someone opens the camera.
         group.addLayer(L.circleMarker([each.lat, each.lon], style).bindPopup(() => cameraView(each)));
       }
@@ -1021,6 +1025,16 @@ const CHANNELS = [
   { id: "france24", name: "France 24 English", channel: "UCQfwfsi5VrQ8yKZ-UWmAEFg" },
   { id: "euronews", name: "Euronews", channel: "UCSrZ3UV4jOidv8ppoVuvW9Q" },
   { id: "bloomberg", name: "Bloomberg TV", channel: "UCIALMKvObZNtJ6AmdCLP7Lg" },
+  // Live city cameras: fixed 24/7 streams, so they are embedded directly.
+  { id: "cam-timessquare", group: "cams", name: "Times Square, New York (EarthCam)", channel: "UC6qrG3W8SMK0jior2olka3g", video: "KHy_n-EMWY8" },
+  { id: "cam-nyc", group: "cams", name: "New York City 24/7 (FOX 5)", channel: "UCIjSUWHWp6KohfnR5OQTXnQ", video: "VGnFLdQW39A" },
+  { id: "cam-hollywood", group: "cams", name: "Hollywood, Los Angeles (LA Times)", channel: "UC4Rrzu44rIpYtuVit90Kl5w", video: "YHWJd_DNgKY" },
+  { id: "cam-whitehouse", group: "cams", name: "White House, Washington (earthTV)", channel: "UCRuyAVeVd7oUwh0LWmxxBBQ", video: "5p_KGD4fJZs" },
+  { id: "cam-monument", group: "cams", name: "Washington Monument (EarthCam)", channel: "UC6qrG3W8SMK0jior2olka3g", video: "mG2gAWY_Guw" },
+  { id: "cam-abbeyroad", group: "cams", name: "Abbey Road, London (EarthCam)", channel: "UC6qrG3W8SMK0jior2olka3g", video: "zMCea32gpmg" },
+  { id: "cam-jerusalem", group: "cams", name: "Western Wall, Jerusalem (EarthCam)", channel: "UC6qrG3W8SMK0jior2olka3g", video: "77akujLn4k8" },
+  { id: "cam-ukraine", group: "cams", name: "Ukraine city cameras: Kyiv, Kharkiv, Odesa… (Intel Cams)", channel: "UCper-NWj8xdXacSpFtF4Mgg", video: "IcZ-7sFi1HM" },
+  { id: "cam-mideast", group: "cams", name: "Middle East city cameras (Intel Cams)", channel: "UCper-NWj8xdXacSpFtF4Mgg", video: "q1NR5q9tZd0" },
 ];
 const HEADLINE_FILTERS = ["All", "World", "US", "UK", "Los Angeles", "New York", "Washington DC", "London"];
 const newsroom = { tab: "tv", filter: "All", timer: null };
@@ -1313,7 +1327,8 @@ function showVideo(screen, video) {
 async function screenFailed(screen, code) {
   if (screen.failing) return;
   screen.failing = true;
-  if (!screen.retried) {
+  // Fixed city-camera streams have no lookup to retry.
+  if (!screen.retried && !screen.channel.video) {
     screen.retried = true;
     try {
       const { videos } = await api(`/api/live?channels=${screen.channel.id}&fresh=1`);
@@ -1358,11 +1373,14 @@ async function screenFailed(screen, code) {
 
 function tvTile(slot, chosen) {
   const channel = CHANNELS.find((each) => each.id === chosen) ?? CHANNELS[slot];
-  const video = liveVideos[channel.id]?.video ?? null;
+  // City cameras are fixed streams; news channels use the server's lookup.
+  const video = channel.video ? { videoId: channel.video, title: channel.name } : (liveVideos[channel.id]?.video ?? null);
+  const option = (each) => el("option", { value: each.id, selected: each.id === channel.id }, each.name);
   const select = el(
     "select",
     { "aria-label": `Channel for screen ${slot + 1}` },
-    ...CHANNELS.map((each) => el("option", { value: each.id, selected: each.id === channel.id }, each.name)),
+    el("optgroup", { label: "News channels" }, ...CHANNELS.filter((each) => !each.group).map(option)),
+    el("optgroup", { label: "Live city cameras" }, ...CHANNELS.filter((each) => each.group === "cams").map(option)),
   );
   select.addEventListener("change", () => {
     const wall = saved.get("tvWall", CHANNELS.slice(0, 4).map((each) => each.id));
@@ -1400,7 +1418,7 @@ function tvTile(slot, chosen) {
 
 async function renderTvWall() {
   const wall = saved.get("tvWall", CHANNELS.slice(0, 4).map((each) => each.id));
-  const stale = wall.filter((id) => !liveVideos[id] || Date.now() - liveVideos[id].at > LIVE_REFRESH_MS);
+  const stale = wall.filter((id) => !CHANNELS.find((each) => each.id === id)?.video && (!liveVideos[id] || Date.now() - liveVideos[id].at > LIVE_REFRESH_MS));
   if (stale.length) {
     try {
       const { videos } = await api(`/api/live?channels=${stale.join(",")}`);
