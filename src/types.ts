@@ -7,6 +7,7 @@ export interface Env {
   SENDGRID_API_KEY?: string;
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
+  WINDY_API_KEY?: string;
 
   CLASSIFIER_MODEL: string;
   MIN_EMAIL_SEVERITY: string;

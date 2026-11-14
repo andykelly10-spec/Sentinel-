@@ -12,6 +12,23 @@ interface Feed {
   type?: string;
 }
 
+// State and provincial 511 traffic systems that share one map platform; each
+// publishes its camera positions at /map/mapIcons/Cameras.
+export const SYSTEMS_511: Record<string, string> = {
+  ga: "511ga.org",
+  fl: "fl511.com",
+  pa: "www.511pa.com",
+  ct: "ctroads.org",
+  ne: "newengland511.org",
+  nv: "www.nvroads.com",
+  az: "www.az511.gov",
+  ut: "udottraffic.utah.gov",
+  la: "www.511la.org",
+  wi: "511wi.gov",
+  on: "511on.ca",
+  ab: "511.alberta.ca",
+};
+
 // Caltrans publishes one camera list per district: 3 is Sacramento, 4 the
 // Bay Area and 7 Los Angeles.
 const CALTRANS_DISTRICTS = ["3", "4", "7"];
@@ -47,6 +64,21 @@ const FEEDS: Record<string, Feed> = {
       return `https://cwwp2.dot.ca.gov/data/d${district}/cctv/cctvStatusD${district.padStart(2, "0")}.json`;
     },
     maxAge: 900,
+  },
+  "cameras-511": {
+    url: (params) => {
+      const host = SYSTEMS_511[params.get("system") ?? ""];
+      return host ? `https://${host}/map/mapIcons/Cameras` : null;
+    },
+    maxAge: 3600,
+  },
+  "cameras-bc": {
+    url: () => "https://www.drivebc.ca/api/webcams/",
+    maxAge: 3600,
+  },
+  "cameras-finland": {
+    url: () => "https://tie.digitraffic.fi/api/weathercam/v1/stations",
+    maxAge: 3600,
   },
   "cameras-nyc": {
     url: () => "https://webcams.nyctmc.org/api/cameras",

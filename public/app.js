@@ -201,7 +201,21 @@ function planeIcon(track, emergency) {
   return L.divIcon({ html: holder, className: "", iconSize: [18, 18], iconAnchor: [9, 9] });
 }
 
+// Windy's free tier asks for its credit beside each image; its image links
+// are signed, so they are used exactly as given.
+function webcamView(cam) {
+  const link = safeUrl(cam.link, ["windy.com", "www.windy.com"]);
+  return popup(
+    "Webcam",
+    cam.name,
+    el("p", { class: "muted" }, [cam.place, cam.updated ? `updated ${ago(cam.updated)}` : null].filter(Boolean).join(" · ")),
+    cam.image ? el("img", { src: cam.image, alt: `View from ${cam.name}`, referrerpolicy: "no-referrer" }) : null,
+    el("p", { class: "credit" }, "Webcams provided by ", el("a", { href: link ?? "https://www.windy.com/webcams", target: "_blank", rel: "noopener noreferrer" }, "windy.com")),
+  );
+}
+
 function cameraView(each) {
+  if (each.owner === "Windy") return webcamView(each);
   const note = [each.owner, each.nearSite ? `${each.siteMiles.toFixed(1)} mi from ${each.nearSite}` : null].filter(Boolean).join(" · ");
   return popup(
     "Traffic camera",
@@ -213,16 +227,30 @@ function cameraView(each) {
   );
 }
 
-// A short list of the open cameras closest to a point; choosing one shows it.
-function nearbyCameras(lat, lon, holder) {
-  const cameraLayer = LAYERS.find((layer) => layer.id === "cameras");
-  if (!cameraLayer.active) {
-    holder.replaceChildren(el("p", { class: "muted" }, "Switch on the camera layer to see nearby cameras."));
-    return;
+// Windy webcams within `miles` of a point, nearest first, as camera entries.
+async function nearbyWebcams(lat, lon, miles) {
+  try {
+    const { cameras } = await api(`/api/webcams?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius=${Math.ceil(miles * 1.609)}`);
+    return cameras
+      .map((cam) => ({ ...cam, owner: "Windy", miles: distanceMiles(lat, lon, cam.lat, cam.lon) }))
+      .filter((cam) => cam.miles <= miles)
+      .sort((a, b) => a.miles - b.miles);
+  } catch {
+    return [];
   }
-  const near = nearestCameras(state.cameras, lat, lon, 4, CAMERA_RANGE_MILES);
+}
+
+// A short list of the open cameras closest to a point; choosing one shows it.
+async function nearbyCameras(lat, lon, holder) {
+  const cameraLayer = LAYERS.find((layer) => layer.id === "cameras");
+  holder.replaceChildren(el("p", { class: "muted" }, "Looking for cameras nearby…"));
+  const traffic = cameraLayer.active ? nearestCameras(state.cameras, lat, lon, 4, CAMERA_RANGE_MILES) : [];
+  const webcams = (await nearbyWebcams(lat, lon, CAMERA_RANGE_MILES)).slice(0, 4);
+  const near = [...traffic, ...webcams].sort((a, b) => a.miles - b.miles).slice(0, 6);
   if (!near.length) {
-    holder.replaceChildren(el("p", { class: "muted" }, `No open cameras within ${CAMERA_RANGE_MILES} miles.`));
+    holder.replaceChildren(
+      el("p", { class: "muted" }, cameraLayer.active ? `No open cameras within ${CAMERA_RANGE_MILES} miles.` : "No webcams nearby. Switch on the traffic camera layer to include traffic cameras."),
+    );
     return;
   }
   const viewer = el("div", {});
@@ -231,7 +259,7 @@ function nearbyCameras(lat, lon, holder) {
     el(
       "div",
       { class: "camera-list" },
-      ...near.map((each) => el("button", { onclick: () => viewer.replaceChildren(cameraView(each)) }, `${each.name} · ${each.miles.toFixed(1)} mi`)),
+      ...near.map((each) => el("button", { onclick: () => viewer.replaceChildren(cameraView(each)) }, `${each.owner === "Windy" ? "Webcam: " : ""}${each.name} · ${each.miles.toFixed(1)} mi`)),
     ),
     viewer,
   );
@@ -560,6 +588,30 @@ const LAYERS = [
         group.addLayer(L.circleMarker([each.lat, each.lon], style).bindPopup(() => cameraView(each)));
       }
       return nearSites;
+    },
+  },
+  {
+    id: "webcams",
+    label: "Webcams worldwide from Windy.com (zoom in to load)",
+    icon: "M4 6h12v10H4zM16 9l4-2v8l-4-2M9 19h2",
+    on: true,
+    every: 600,
+    followsMap: true,
+    async load(group) {
+      if (map.getZoom() < 9) return null;
+      const bounds = map.getBounds();
+      const north = Math.min(85, bounds.getNorth());
+      const south = Math.max(-85, bounds.getSouth());
+      const west = Math.max(-180, bounds.getWest());
+      const east = Math.min(180, bounds.getEast());
+      const { cameras } = await api(`/api/webcams?north=${north.toFixed(4)}&east=${east.toFixed(4)}&south=${south.toFixed(4)}&west=${west.toFixed(4)}`);
+      for (const cam of cameras) {
+        const entry = { ...cam, owner: "Windy" };
+        group.addLayer(
+          L.circleMarker([cam.lat, cam.lon], { radius: 5, color: "#04121a", weight: 1, fillColor: "#2fd3e6", fillOpacity: 0.9 }).bindPopup(() => webcamView(entry), { maxWidth: 420 }),
+        );
+      }
+      return cameras.length;
     },
   },
   {

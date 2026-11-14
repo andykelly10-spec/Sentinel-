@@ -96,7 +96,8 @@ describe("tying cameras to sites", () => {
   ];
 
   it("downloads only the feeds whose region holds a site", () => {
-    expect(feedsForSites(sites).map((feed) => feed.id)).toEqual(["new-york", "london"]);
+    // Atlanta's Techwood campus is covered by Georgia 511.
+    expect(feedsForSites(sites).map((feed) => feed.id)).toEqual(["new-york", "georgia", "london"]);
     expect(feedsForSites([])).toEqual([]);
   });
 
@@ -111,5 +112,40 @@ describe("tying cameras to sites", () => {
     expect(near.map((each: { name: string }) => each.name)).toEqual(["10 Ave @ 57 St", "Broadway @ 46 St"]);
     expect(nearestCameras(cameras, 40.7689, -73.9908, 1, 2)).toHaveLength(1);
     expect(nearestCameras(cameras, 33.7838, -84.392, 4, 2)).toEqual([]);
+  });
+});
+
+describe("more camera systems", () => {
+  it("reads the state and provincial 511 systems, building each still's address", () => {
+    const body = { item1: { size: [29, 35] }, item2: [{ itemId: "11141", location: [34.37697, -84.91445], icon: {}, title: "" }, { itemId: "../bad", location: [34, -84], title: "" }] };
+    expect(parse("georgia", body)).toEqual([
+      { owner: "Georgia 511", lat: 34.37697, lon: -84.91445, name: "Georgia 511 camera 11141", image: "https://511ga.org/map/Cctv/11141", link: null },
+    ]);
+    expect(parse("ontario", body)[0]!.image).toBe("https://511on.ca/map/Cctv/11141");
+  });
+
+  it("reads DriveBC, skipping cameras that are off or stale", () => {
+    const entry = (fields: Record<string, unknown>) => ({
+      id: 67, name: "Oak Street at 70 Avenue - N", links: { imageDisplay: "/images/67.jpg?t=1794621206" },
+      location: { type: "Point", coordinates: [-123.1295, 49.2104] }, is_on: true, should_appear: true, marked_stale: false, ...fields,
+    });
+    expect(parse("british-columbia", [entry({}), entry({ is_on: false }), entry({ marked_stale: true }), entry({ links: { imageDisplay: "https://evil.example/x.jpg" } })])).toEqual([
+      { owner: "DriveBC", lat: 49.2104, lon: -123.1295, name: "Oak Street at 70 Avenue - N", image: "https://www.drivebc.ca/images/67.jpg?t=1794621206", link: null },
+    ]);
+  });
+
+  it("reads Finland's road weather cameras, using the first preset in collection", () => {
+    const station = (status: string) => ({
+      type: "Feature", geometry: { type: "Point", coordinates: [23.99616, 60.05374, 0] },
+      properties: { name: "kt51_Inkoo", collectionStatus: status, presets: [{ id: "C0150300", inCollection: false }, { id: "C0150301", inCollection: true }] },
+    });
+    expect(parse("finland", { features: [station("GATHERING"), station("REMOVED_TEMPORARILY")] })).toEqual([
+      { owner: "Fintraffic", lat: 60.05374, lon: 23.99616, name: "Inkoo", image: "https://weathercam.digitraffic.fi/C0150301.jpg", link: null },
+    ]);
+  });
+
+  it("downloads a state's list only when a site is in that state", () => {
+    const atlanta = { lat: 33.79, lon: -84.39 };
+    expect(feedsForSites([atlanta]).map((feed) => feed.id)).toEqual(["georgia"]);
   });
 });

@@ -315,6 +315,8 @@ select { font-size: 12px; padding: 4px 6px; border-radius: 4px; background: var(
 .service-issue a:hover { text-decoration: underline; }
 .service-issue p { margin: 3px 0 0; font-size: 12.5px; color: #aeb5bf; }
 .tv-title { font-size: 11.5px; color: var(--muted); padding: 4px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.popup .credit { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+.popup .credit a { color: var(--cyan); }
 .raid-tip { background: rgba(7, 9, 11, 0.8); border: 0; color: #fff; font: 600 10px var(--mono); letter-spacing: 0.06em; box-shadow: none; padding: 1px 4px; }
 .raid-tip::before { display: none; }
 .raid-active { animation: raid 2s ease-in-out infinite; }

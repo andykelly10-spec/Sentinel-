@@ -91,6 +91,53 @@ function parseMadrid(text) {
   }).filter(Boolean);
 }
 
+// The 511 systems list positions only; each camera's still is at /map/Cctv/<id>.
+const SYSTEMS_511 = {
+  ga: ["Georgia 511", "511ga.org"],
+  fl: ["Florida 511", "fl511.com"],
+  pa: ["511PA", "www.511pa.com"],
+  ct: ["CTroads", "ctroads.org"],
+  ne: ["New England 511", "newengland511.org"],
+  nv: ["Nevada Roads", "www.nvroads.com"],
+  az: ["AZ511", "www.az511.gov"],
+  ut: ["UDOT Traffic", "udottraffic.utah.gov"],
+  la: ["Louisiana 511", "www.511la.org"],
+  wi: ["511 Wisconsin", "511wi.gov"],
+  on: ["Ontario 511", "511on.ca"],
+  ab: ["Alberta 511", "511.alberta.ca"],
+};
+
+function parse511(system) {
+  const [owner, host] = SYSTEMS_511[system];
+  return (text) =>
+    (JSON.parse(text).item2 ?? []).flatMap((entry) => {
+      const id = String(entry.itemId ?? "");
+      if (!/^[\w-]+$/.test(id)) return [];
+      const [lat, lon] = entry.location ?? [];
+      return camera(owner, lat, lon, entry.title || `${owner} camera ${id}`, `https://${host}/map/Cctv/${id}`) ?? [];
+    });
+}
+
+function parseBritishColumbia(text) {
+  return JSON.parse(text).flatMap((entry) => {
+    if (!entry.is_on || entry.should_appear === false || entry.marked_stale) return [];
+    const path = String(entry.links?.imageDisplay ?? "");
+    if (!/^\/images\/\d+\.jpg/.test(path)) return [];
+    const [lon, lat] = entry.location?.coordinates ?? [];
+    return camera("DriveBC", lat, lon, entry.name, `https://www.drivebc.ca${path}`) ?? [];
+  });
+}
+
+function parseFinland(text) {
+  return (JSON.parse(text).features ?? []).flatMap((feature) => {
+    const props = feature.properties ?? {};
+    const preset = (props.presets ?? []).find((each) => each.inCollection)?.id;
+    if (props.collectionStatus !== "GATHERING" || !/^\w+$/.test(preset ?? "")) return [];
+    const [lon, lat] = feature.geometry?.coordinates ?? [];
+    return camera("Fintraffic", lat, lon, String(props.name ?? "").replace(/^\w+_/, ""), `https://weathercam.digitraffic.fi/${preset}.jpg`) ?? [];
+  });
+}
+
 function parseLondon(text) {
   return JSON.parse(text).flatMap((place) => {
     const property = (key) => (place.additionalProperties ?? []).find((each) => each.key === key)?.value;
@@ -112,6 +159,20 @@ export const CAMERA_FEEDS = [
   { id: "sydney", place: "Sydney", region: [-34.3, 150.5, -33.4, 151.5], url: "/api/feeds/cameras-sydney", parse: parseSydney },
   { id: "singapore", place: "Singapore", region: [1.15, 103.6, 1.48, 104.1], url: "/api/feeds/cameras-singapore", parse: parseSingapore },
   { id: "hong-kong", place: "Hong Kong", region: [22.15, 113.8, 22.6, 114.45], url: "/api/feeds/cameras-hongkong", parse: parseHongKong },
+  { id: "georgia", place: "Georgia (Atlanta)", region: [30.3, -85.7, 35.1, -80.8], url: "/api/feeds/cameras-511?system=ga", parse: parse511("ga") },
+  { id: "florida", place: "Florida", region: [24.4, -87.7, 31.1, -79.8], url: "/api/feeds/cameras-511?system=fl", parse: parse511("fl") },
+  { id: "pennsylvania", place: "Pennsylvania", region: [39.7, -80.6, 42.3, -74.6], url: "/api/feeds/cameras-511?system=pa", parse: parse511("pa") },
+  { id: "connecticut", place: "Connecticut", region: [40.95, -73.75, 42.06, -71.78], url: "/api/feeds/cameras-511?system=ct", parse: parse511("ct") },
+  { id: "new-england", place: "Maine, New Hampshire and Vermont", region: [42.6, -73.5, 47.5, -66.9], url: "/api/feeds/cameras-511?system=ne", parse: parse511("ne") },
+  { id: "nevada", place: "Nevada (Las Vegas)", region: [35.0, -120.0, 42.0, -114.0], url: "/api/feeds/cameras-511?system=nv", parse: parse511("nv") },
+  { id: "arizona", place: "Arizona (Phoenix)", region: [31.3, -114.9, 37.0, -109.0], url: "/api/feeds/cameras-511?system=az", parse: parse511("az") },
+  { id: "utah", place: "Utah (Salt Lake City)", region: [37.0, -114.1, 42.0, -109.0], url: "/api/feeds/cameras-511?system=ut", parse: parse511("ut") },
+  { id: "louisiana", place: "Louisiana (New Orleans)", region: [28.9, -94.1, 33.1, -88.8], url: "/api/feeds/cameras-511?system=la", parse: parse511("la") },
+  { id: "wisconsin", place: "Wisconsin", region: [42.5, -92.9, 47.1, -86.8], url: "/api/feeds/cameras-511?system=wi", parse: parse511("wi") },
+  { id: "ontario", place: "Ontario (Toronto)", region: [41.7, -95.2, 56.9, -74.3], url: "/api/feeds/cameras-511?system=on", parse: parse511("on") },
+  { id: "alberta", place: "Alberta (Calgary, Edmonton)", region: [49.0, -120.0, 60.0, -110.0], url: "/api/feeds/cameras-511?system=ab", parse: parse511("ab") },
+  { id: "british-columbia", place: "British Columbia (Vancouver)", region: [48.2, -139.1, 60.0, -114.0], url: "/api/feeds/cameras-bc", parse: parseBritishColumbia },
+  { id: "finland", place: "Finland", region: [59.7, 20.5, 70.1, 31.6], url: "/api/feeds/cameras-finland", parse: parseFinland },
   { id: "madrid", place: "Madrid", region: [40.3, -3.9, 40.6, -3.5], url: "/api/feeds/cameras-madrid", parse: parseMadrid },
   // Transport for London rate-limits Cloudflare's shared addresses, so the
   // browser asks it directly.
