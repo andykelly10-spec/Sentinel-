@@ -29,6 +29,8 @@ const SOURCE_NAMES = {
   faa_tfr: "Flight restrictions (FAA)",
   travel_advisory: "Travel advisories (State Department)",
   domains: "Lookalike domains (certificate logs)",
+  dispatch: "City 911 dispatch (Seattle Fire, San Francisco Police)",
+  nixle: "Nixle police and agency alerts (your ZIP code)",
 };
 const BRIEF_COLORS = { critical: "var(--critical)", high: "var(--high)", medium: "var(--medium)", low: "var(--low)" };
 const WEATHER_CODES = {
@@ -118,7 +120,12 @@ const saved = {
 };
 
 const rank = (severity) => SEVERITIES.length - SEVERITIES.indexOf(severity);
-const proximity = (item) => (item.site && item.distanceMi !== null ? `${item.distanceMi < 0.1 ? 0.1 : item.distanceMi} mi from ${item.site}` : "");
+const proximity = (item) =>
+  item.site && item.distanceMi !== null
+    ? `${item.distanceMi < 0.1 ? 0.1 : item.distanceMi} mi from ${item.site === "Your location" ? "you" : item.site}`
+    : item.site === "Your location"
+      ? "In your area"
+      : "";
 
 // ---------- map ----------
 
@@ -1202,6 +1209,7 @@ async function refresh() {
     renderTicker();
     await Promise.all(LAYERS.filter((layer) => layer.id === "sites" || layer.id === "incidents").map(loadLayer));
     if (firstLoad) fitSites();
+    checkNear();
     // Layers built from the site list load once it is known, and again if it changes.
     const siteCount = info.sites.length;
     if (siteCount !== knownSites) {
@@ -1217,11 +1225,60 @@ async function refresh() {
 
 // Alerts within this many miles of you are counted in the "you are here" popup.
 const NEARBY_MILES = 10;
-let myLocation = null;
+const MY_SITE = "Your location";
+const RADIUS_CHOICES = [0.5, 1, 2, 5, 10];
+// Your position is sent again after a move this far, or this long without one,
+// so the server keeps watching where you are (it stops 12 hours after the last).
+const RESEND_MILES = 0.15;
+const RESEND_MS = 10 * 60_000;
 // Keeps the popup narrow enough for a phone and clear of the left rail and top bar.
-const LOCATION_POPUP = { maxWidth: 260, autoPanPaddingTopLeft: [80, 80], autoPanPaddingBottomRight: [20, 60] };
+const LOCATION_POPUP = { maxWidth: 270, autoPanPaddingTopLeft: [80, 80], autoPanPaddingBottomRight: [20, 60] };
+
+const near = {
+  settings: saved.get("nearWatch", { on: false, radiusMi: 1 }),
+  here: null,
+  watchId: null,
+  lastSent: null,
+  layer: null,
+  dot: null,
+  ring: null,
+  zone: null,
+  seen: new Set(saved.get("nearSeen", [])),
+};
 
 const miles = (value) => (value < 0.1 ? "0.1" : value < 10 ? value.toFixed(1) : Math.round(value).toLocaleString());
+
+function watchControls() {
+  const { on, radiusMi } = near.settings;
+  const status = el(
+    "p",
+    { class: "muted small", id: "near-status" },
+    on
+      ? `Watching ${radiusMi} mi around you. Police and fire dispatch, Nixle, local news, weather and civil emergencies are checked every 15 minutes; you are alerted here and by notification.`
+      : "Get an alert on this page, and a notification, when an incident is reported near you.",
+  );
+  return el(
+    "div",
+    { class: "near-controls" },
+    el(
+      "label",
+      { class: "switch" },
+      el("input", { type: "checkbox", role: "switch", checked: on, onchange: (event) => (event.target.checked ? startWatching() : stopWatching()) }),
+      el("span", {}, "Alert me to incidents near me"),
+    ),
+    el(
+      "label",
+      { class: "radius" },
+      "Within ",
+      el(
+        "select",
+        { "aria-label": "Alert radius", onchange: (event) => setRadius(Number(event.target.value)) },
+        ...RADIUS_CHOICES.map((value) => el("option", { value: String(value), selected: value === radiusMi }, `${value} mi`)),
+      ),
+    ),
+    status,
+  );
+}
 
 function locationPopup(lat, lon) {
   const sites = (state.info?.sites ?? []).map((site) => ({ site, miles: distanceMiles(lat, lon, site.lat, site.lon) }));
@@ -1239,11 +1296,52 @@ function locationPopup(lat, lon) {
         ? `${nearby.length} open alert${nearby.length === 1 ? "" : "s"} within ${NEARBY_MILES} mi (highest: ${worst}).`
         : `No open alerts within ${NEARBY_MILES} mi.`,
     ),
+    watchControls(),
   );
 }
 
 function locationProblem(message) {
   L.popup({ ...LOCATION_POPUP, className: "locate-problem" }).setLatLng(map.getCenter()).setContent(popup("My location", "Location unavailable", el("p", {}, message))).openOn(map);
+}
+
+function locationError(error) {
+  return error.code === error.PERMISSION_DENIED
+    ? "Location is blocked for this site. Allow it in your browser's site settings (the icon next to the address), then press the button again."
+    : "Your location could not be found just now. Check that location services are on, then try again.";
+}
+
+// Draws (or moves) the "you are here" dot, its accuracy ring and, while
+// watching, the alert radius.
+function drawMe(lat, lon, accuracy) {
+  near.here = { lat, lon, accuracy };
+  if (!near.layer) {
+    near.ring = L.circle([lat, lon], { radius: accuracy, color: "#2fd3e6", weight: 1, fillColor: "#2fd3e6", fillOpacity: 0.08, interactive: false });
+    near.dot = L.marker([lat, lon], {
+      icon: L.divIcon({ className: "me-marker", html: "<span></span>", iconSize: [18, 18] }),
+      keyboard: false,
+      zIndexOffset: 1000,
+    }).bindPopup(() => locationPopup(near.here.lat, near.here.lon), LOCATION_POPUP);
+    near.layer = L.layerGroup([near.ring, near.dot]).addTo(map);
+  } else {
+    near.ring.setLatLng([lat, lon]).setRadius(accuracy);
+    near.dot.setLatLng([lat, lon]);
+  }
+  drawZone();
+  document.getElementById("locate-me").setAttribute("aria-pressed", "true");
+}
+
+function drawZone() {
+  near.zone?.remove();
+  near.zone = null;
+  if (!near.settings.on || !near.here) return;
+  near.zone = L.circle([near.here.lat, near.here.lon], {
+    radius: near.settings.radiusMi * 1609.34,
+    color: "#e3ab35",
+    weight: 1.5,
+    dashArray: "6 6",
+    fill: false,
+    interactive: false,
+  }).addTo(map);
 }
 
 function locateMe() {
@@ -1255,34 +1353,183 @@ function locateMe() {
     ({ coords }) => {
       button.classList.remove("busy");
       button.disabled = false;
-      button.setAttribute("aria-pressed", "true");
       const { latitude: lat, longitude: lon, accuracy } = coords;
-      myLocation?.remove();
-      const ring = L.circle([lat, lon], { radius: accuracy, color: "#2fd3e6", weight: 1, fillColor: "#2fd3e6", fillOpacity: 0.08, interactive: false });
-      const dot = L.marker([lat, lon], {
-        icon: L.divIcon({ className: "me-marker", html: "<span></span>", iconSize: [18, 18] }),
-        keyboard: false,
-        zIndexOffset: 1000,
-      }).bindPopup(() => locationPopup(lat, lon), LOCATION_POPUP);
-      myLocation = L.layerGroup([ring, dot]).addTo(map);
+      drawMe(lat, lon, accuracy);
       // A rough fix (a laptop on Wi-Fi can be off by miles) is shown whole;
       // a precise one zooms to street level.
-      if (accuracy > 1500) map.flyToBounds(ring.getBounds().pad(0.2), { maxZoom: 15, duration: 0.8 });
-      else map.flyTo([lat, lon], 15, { duration: 0.8 });
-      map.once("moveend", () => dot.openPopup());
+      if (accuracy > 1500) map.flyToBounds(near.ring.getBounds().pad(0.2), { maxZoom: 15, duration: 0.8 });
+      else map.flyTo([lat, lon], near.settings.on && near.settings.radiusMi > 1 ? 13 : 15, { duration: 0.8 });
+      map.once("moveend", () => near.dot.openPopup());
+      if (near.settings.on) sendPosition(true);
     },
     (error) => {
       button.classList.remove("busy");
       button.disabled = false;
-      locationProblem(
-        error.code === error.PERMISSION_DENIED
-          ? "Location is blocked for this site. Allow it in your browser's site settings (the icon next to the address), then press the button again."
-          : "Your location could not be found just now. Check that location services are on, then try again.",
-      );
+      locationProblem(locationError(error));
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
   );
 }
+
+// ----- alerts near you -----
+
+function saveNear() {
+  saved.set("nearWatch", near.settings);
+}
+
+function renderWatchState() {
+  const button = document.getElementById("locate-me");
+  button.classList.toggle("watching", near.settings.on);
+  button.title = near.settings.on ? `Watching ${near.settings.radiusMi} mi around you` : "My location";
+  const popupNode = near.dot?.getPopup();
+  if (popupNode?.isOpen()) popupNode.setContent(locationPopup(near.here.lat, near.here.lon));
+}
+
+async function sendPosition(force = false) {
+  if (!near.settings.on || !near.here) return;
+  const { lat, lon, accuracy } = near.here;
+  const last = near.lastSent;
+  const due = force || !last || distanceMiles(lat, lon, last.lat, last.lon) > RESEND_MILES || Date.now() - last.at > RESEND_MS;
+  if (!due) return;
+  near.lastSent = { lat, lon, at: Date.now() };
+  try {
+    await api("/api/me", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat, lon, radiusMi: near.settings.radiusMi, accuracyM: accuracy }),
+    });
+  } catch (error) {
+    near.lastSent = null;
+    console.warn("Could not send your position:", error.message);
+  }
+}
+
+function startWatching({ quiet = false } = {}) {
+  if (!navigator.geolocation) return locationProblem("This browser cannot share its location.");
+  near.settings.on = true;
+  saveNear();
+  // Asked while the switch is being pressed, as browsers require.
+  if (!quiet && "Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+  if (near.watchId === null) {
+    near.watchId = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        drawMe(coords.latitude, coords.longitude, coords.accuracy);
+        sendPosition();
+        checkNear();
+      },
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          stopWatching({ keepServer: true });
+          if (!quiet) locationProblem(locationError(error));
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 30000, timeout: 30000 },
+    );
+  }
+  drawZone();
+  renderWatchState();
+}
+
+async function stopWatching({ keepServer = false } = {}) {
+  near.settings.on = false;
+  saveNear();
+  if (near.watchId !== null) navigator.geolocation.clearWatch(near.watchId);
+  near.watchId = null;
+  near.lastSent = null;
+  drawZone();
+  renderWatchState();
+  hideNearBanner();
+  if (!keepServer) await api("/api/me/off", { method: "POST" }).catch(() => {});
+}
+
+function setRadius(value) {
+  near.settings.radiusMi = value;
+  saveNear();
+  drawZone();
+  renderWatchState();
+  sendPosition(true);
+  checkNear();
+}
+
+// Open alerts close to you that you have not been told about yet.
+async function checkNear() {
+  if (!near.settings.on || !near.here) return;
+  let alerts;
+  try {
+    ({ alerts } = await api("/api/alerts?status=new"));
+  } catch {
+    return;
+  }
+  const { lat, lon } = near.here;
+  const close = groupAlerts(alerts)
+    .map((group) => ({
+      group,
+      miles: group.lat !== null ? distanceMiles(lat, lon, group.lat, group.lon) : null,
+    }))
+    .filter(({ group, miles: distance }) => (distance !== null ? distance <= near.settings.radiusMi : group.reports.some((report) => report.site === MY_SITE)))
+    .sort((a, b) => rank(b.group.severity) - rank(a.group.severity) || (a.miles ?? 0) - (b.miles ?? 0));
+  const fresh = close.filter(({ group }) => !near.seen.has(group.key));
+  if (fresh.length === 0) return;
+  for (const { group } of fresh) near.seen.add(group.key);
+  saved.set("nearSeen", [...near.seen].slice(-300));
+  showNearBanner(fresh);
+  notifyNear(fresh);
+}
+
+const distanceText = (distance) => (distance === null ? "In your area" : `${miles(distance)} mi away`);
+
+function showNearBanner(entries) {
+  const [{ group, miles: distance }] = entries;
+  const banner = document.getElementById("near-banner");
+  banner.className = `near-banner sev-${group.severity}`;
+  banner.replaceChildren(
+    el("div", { class: "near-label" }, el("span", { class: "dot" }), `Near you · ${distanceText(distance)} · ${group.severity}`),
+    el("div", { class: "near-title" }, group.name),
+    el("div", { class: "near-summary" }, group.summary),
+    el(
+      "div",
+      { class: "near-actions" },
+      group.lat !== null ? el("button", { class: "pill gold", onclick: () => { locate(group); hideNearBanner(); } }, "Show on map") : null,
+      group.lead.url ? el("a", { class: "pill", href: group.lead.url, target: "_blank", rel: "noopener noreferrer" }, "Source") : null,
+      el("button", { class: "pill", onclick: hideNearBanner }, entries.length > 1 ? `Dismiss (+${entries.length - 1} more in the alerts list)` : "Dismiss"),
+    ),
+  );
+  banner.hidden = false;
+  map.closePopup();
+  navigator.vibrate?.([200, 100, 200]);
+}
+
+function hideNearBanner() {
+  document.getElementById("near-banner").hidden = true;
+}
+
+function notifyNear(entries) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  for (const { group, miles: distance } of entries.slice(0, 3)) {
+    try {
+      const note = new Notification(`Near you: ${group.name}`, {
+        body: `${distanceText(distance)} · ${group.severity}. ${group.summary}`.slice(0, 240),
+        tag: `sentinel-${group.key}`,
+        requireInteraction: group.severity === "critical",
+      });
+      note.onclick = () => {
+        window.focus();
+        if (group.lat !== null) locate(group);
+        note.close();
+      };
+    } catch {
+      // Some phone browsers only allow notifications from an installed app.
+    }
+  }
+}
+
+// Picks up watching again after a reload, without prompting.
+if (near.settings.on) {
+  startWatching({ quiet: true });
+}
+setInterval(() => {
+  sendPosition();
+}, RESEND_MS);
 
 function fitSites() {
   const sites = state.info?.sites ?? [];

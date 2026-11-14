@@ -410,6 +410,7 @@ describe("runHazards", () => {
       ["gdacs", 1, null],
       ["aircraft", 1, null],
       ["faa_tfr", 1, null],
+      ["dispatch", 0, null],
       ["travel_advisory", 1, null],
       ["domains", 2, null],
     ]);

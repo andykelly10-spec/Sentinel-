@@ -15,6 +15,13 @@ interface Watch extends Watchlist {
   sites: Site[];
   // The news outlets to read this run; they are read a few at a time.
   outlets?: Outlet[];
+  // Searched first for local incidents: the area around you while you watch it.
+  focusArea?: string;
+}
+
+export function searchAreas(watch: Pick<Watch, "sites" | "focusArea">): string[] {
+  const areas = priorityAreas(watch.sites, MAX_AREA_SEARCHES);
+  return watch.focusArea ? [watch.focusArea, ...areas.filter((area) => area !== watch.focusArea)].slice(0, MAX_AREA_SEARCHES) : areas;
 }
 
 const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Promise<RawItem[]> }> = [
@@ -25,7 +32,7 @@ const SOURCES: Array<{ name: SourceName; fetch: (watch: Watch, now: Date) => Pro
       watch.sites.length === 0
         ? []
         : fetchBingLocal(
-            priorityAreas(watch.sites, MAX_AREA_SEARCHES),
+            searchAreas(watch),
             watch.incidentTerms,
             watch.urgentTerms,
             placeWords(watch.sites),

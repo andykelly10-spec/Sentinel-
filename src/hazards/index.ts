@@ -3,9 +3,12 @@ import { notify } from "../notify";
 import type { Env, HazardItem, Site, SourceName, SourceResult } from "../types";
 import { advisoryHazards } from "./advisories";
 import { aircraftHazards } from "./aircraft";
+import { activeLocation, withMyLocation } from "../me";
 import { disasterHazards } from "./disasters";
+import { dispatchHazards } from "./dispatch";
 import { domainHazards } from "./domains";
 import { restrictionHazards } from "./flightRestrictions";
+import { nixleHazards } from "./nixle";
 import { quakeHazards } from "./quakes";
 import { resolveZones, weatherHazards } from "./weather";
 import { wildfireHazards } from "./wildfires";
@@ -29,6 +32,7 @@ function message(error: unknown): string {
 export async function runHazards(env: Env, now: Date = new Date(), hourly = false): Promise<RunRecord> {
   const errors: string[] = [];
   let sites: Site[] = await listSites(env.DB);
+  const me = await activeLocation(env.DB, now);
 
   try {
     const lookups = await resolveZones(sites, ZONE_LOOKUPS_PER_RUN);
@@ -41,6 +45,8 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
   } catch (error) {
     errors.push(`Weather zone lookup: ${message(error)}`);
   }
+  // Your location (while you are watching it) is checked like any other site.
+  sites = withMyLocation(sites, me);
 
   const wrap = (items: Promise<HazardItem[]>): Promise<HazardCheck> => items.then((list) => ({ items: list }));
   const checks: Array<{ source: SourceName; run: () => Promise<HazardCheck> }> = [
@@ -50,6 +56,8 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
     { source: "gdacs", run: () => wrap(disasterHazards(sites, now)) },
     { source: "aircraft", run: () => wrap(aircraftHazards(sites, now)) },
     { source: "faa_tfr", run: () => wrap(restrictionHazards(sites, now)) },
+    { source: "dispatch", run: () => wrap(dispatchHazards(sites, now)) },
+    ...(me ? [{ source: "nixle" as const, run: () => wrap(nixleHazards(me, now)) }] : []),
     ...(hourly
       ? [
           { source: "travel_advisory" as const, run: () => advisoryHazards(env.DB, sites, now) },

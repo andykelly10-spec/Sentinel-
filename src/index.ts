@@ -27,6 +27,7 @@ import {
 } from "./db";
 import { proxyFeed } from "./feeds";
 import { latestHeadlines } from "./headlines";
+import { activeLocation, clearMyLocation, updateMyLocation, validUpdate } from "./me";
 import { runHazards } from "./hazards";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
@@ -55,7 +56,7 @@ function pick(value: string | null, allowed: readonly string[]): string | undefi
   return value && allowed.includes(value) ? value : undefined;
 }
 
-async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionContext): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/alerts") {
     const alerts = await listAlerts(env.DB, {
       category: pick(url.searchParams.get("category"), CATEGORY_FILTERS),
@@ -72,14 +73,15 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (request.method === "GET" && url.pathname === "/api/status") {
     const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    const [lastRun, lastHazardRun, open, activity, sites] = await Promise.all([
+    const [lastRun, lastHazardRun, open, activity, sites, me] = await Promise.all([
       latestRun(env.DB, "news"),
       latestRun(env.DB, "hazards"),
       openCounts(env.DB),
       hourlyActivity(env.DB, dayAgo),
       listSites(env.DB),
+      activeLocation(env.DB, new Date()),
     ]);
-    return json({ lastRun, lastHazardRun, open, activity, sites, email: emailConfigured(env), sms: smsConfigured(env) });
+    return json({ lastRun, lastHazardRun, open, activity, sites, me, email: emailConfigured(env), sms: smsConfigured(env) });
   }
 
   if (request.method === "GET" && url.pathname === "/api/headlines") {
@@ -95,6 +97,22 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
     if (url.pathname === "/api/run") {
       return json({ run: await runPipeline(env) });
+    }
+
+    // Alerts near you: the dashboard sends your position while you watch it.
+    if (url.pathname === "/api/me") {
+      const update = validUpdate(await request.json().catch(() => null));
+      if (!update) return json({ error: "lat and lon are required" }, 400);
+      const now = new Date();
+      const { location, moved } = await updateMyLocation(env.DB, update, now);
+      // After a move, check the new area straight away rather than at the next scheduled run.
+      if (moved && ctx) ctx.waitUntil(runHazards(env, now).catch((error) => console.error("Near-you check failed:", error)));
+      return json({ location, checking: moved });
+    }
+
+    if (url.pathname === "/api/me/off") {
+      await clearMyLocation(env.DB);
+      return json({ ok: true });
     }
 
     if (url.pathname === "/api/hazards/run") {
@@ -188,7 +206,7 @@ async function signedIn(request: Request, password: string): Promise<boolean> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     if (!env.DASHBOARD_PASSWORD) {
       return new Response("Sentinel is not configured: set the DASHBOARD_PASSWORD secret.", { status: 503 });
     }
@@ -206,7 +224,7 @@ export default {
 
     if (url.pathname.startsWith("/api/")) {
       try {
-        return await handleApi(request, env, url);
+        return await handleApi(request, env, url, ctx);
       } catch (error) {
         console.error("API error:", error);
         return json({ error: "Internal error" }, 500);

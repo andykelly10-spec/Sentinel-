@@ -32,6 +32,8 @@ export interface Site {
   // Filled in by the hazard check; see migrations/0004.
   nws_zones: string | null;
   region: string;
+  // How close an incident must be to count, where a check has a choice; set for "Your location".
+  radiusMi?: number;
 }
 
 export type NewSite = Omit<Site, "id" | "nws_zones" | "region">;
@@ -52,7 +54,9 @@ export type SourceName =
   | "aircraft"
   | "faa_tfr"
   | "travel_advisory"
-  | "domains";
+  | "domains"
+  | "dispatch"
+  | "nixle";
 
 export interface RawItem {
   source: SourceName;

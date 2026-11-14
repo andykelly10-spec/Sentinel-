@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { BATCH_SIZE, buildSystemPrompt, classifyBatch, createClient } from "./classify";
 import { findExistingIds, getSetting, insertItems, listSites, recentIncidents, recordRun, setSetting, type RunRecord } from "./db";
 import { nearestSite } from "./geo";
+import { activeLocation, withMyLocation } from "./me";
 import { notify } from "./notify";
 import { collect } from "./sources";
 import { OUTLETS } from "./sources/outlets";
@@ -35,10 +36,11 @@ function newestFirst(a: Candidate, b: Candidate): number {
 
 export async function runPipeline(env: Env, now: Date = new Date()): Promise<RunRecord> {
   const errors: string[] = [];
-  const sites = await listSites(env.DB);
+  const me = await activeLocation(env.DB, now);
+  const sites = withMyLocation(await listSites(env.DB), me);
   const start = Number((await getSetting(env.DB, OUTLET_ROTATION)) ?? "0") % OUTLETS.length;
   const outlets = Array.from({ length: Math.min(OUTLETS_PER_RUN, OUTLETS.length) }, (_, i) => OUTLETS[(start + i) % OUTLETS.length]!);
-  const { candidates, sources } = await collect({ ...WATCHLIST, sites, outlets }, now);
+  const { candidates, sources } = await collect({ ...WATCHLIST, sites, outlets, focusArea: me?.city ?? "" }, now);
   await setSetting(env.DB, OUTLET_ROTATION, String((start + outlets.length) % OUTLETS.length));
 
   const existing = await findExistingIds(env.DB, candidates.map((candidate) => candidate.id));
