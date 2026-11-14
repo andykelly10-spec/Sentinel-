@@ -164,6 +164,16 @@ export async function updateMyLocation(
   return { location, moved };
 }
 
+// The name local news uses: "Green Brook Township" is "Green Brook", and
+// "City of Westminster" is "Westminster".
+export function searchName(city: string): string {
+  const short = city
+    .replace(/^(city|town|borough|village|township|municipality) of /i, "")
+    .replace(/ (township|borough|village|city|town|municipality)$/i, "")
+    .trim();
+  return short || city;
+}
+
 // Your location as a site, so every check that measures distance to sites covers it.
 export function mySite(me: MyLocation): Site {
   return {
@@ -174,7 +184,7 @@ export function mySite(me: MyLocation): Site {
     country: me.country,
     lat: me.lat,
     lon: me.lon,
-    area: me.city,
+    area: searchName(me.city),
     keywords: me.neighbourhood,
     priority: true,
     approximate: false,

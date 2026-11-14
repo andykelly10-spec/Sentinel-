@@ -3,7 +3,7 @@ import worker from "../src/index";
 import { runHazards } from "../src/hazards";
 import { callsToItems, FEEDS, seattleSeverity, sfPoliceSeverity, zonedToIso, type DispatchCall } from "../src/hazards/dispatch";
 import { nixlePostsToItems, nixleSeverity, parseAge, parseNixleZip } from "../src/hazards/nixle";
-import { activeLocation, mySite, parseNominatim, updateMyLocation, validUpdate, withMyLocation, type MyLocation } from "../src/me";
+import { activeLocation, mySite, searchName, parseNominatim, updateMyLocation, validUpdate, withMyLocation, type MyLocation } from "../src/me";
 import { searchAreas } from "../src/sources";
 import type { Site } from "../src/types";
 import { createEnv, NOW } from "./helpers";
@@ -137,6 +137,11 @@ describe("your location", () => {
     expect(mySite(me)).toMatchObject({ area: "Santa Monica", keywords: "Downtown Santa Monica", radiusMi: 1, priority: true });
     expect(searchAreas({ sites: [sfSite], focusArea: "Santa Monica" })).toEqual(["Santa Monica", "San Francisco"]);
     expect(withMyLocation([sfSite], null)).toEqual([sfSite]);
+    expect(searchName("Green Brook Township")).toBe("Green Brook");
+    expect(searchName("City of Westminster")).toBe("Westminster");
+    expect(searchName("New York City")).toBe("New York");
+    expect(searchName("Santa Monica")).toBe("Santa Monica");
+    expect(searchName("Township")).toBe("Township");
   });
 
   it("is set, reported and cleared through the API, and only from the dashboard itself", async () => {
