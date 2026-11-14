@@ -2,6 +2,8 @@
 export const NEWS_CRON = "*/15 * * * *";
 // Offset from the news check so the two never run at the same moment.
 export const HAZARD_CRON = "7,22,37,52 * * * *";
+// Service and internet outages, offset from both of the above.
+export const OUTAGE_CRON = "11,26,41,56 * * * *";
 // The hazard run at this minute also does the hourly checks.
 export const HOURLY_MINUTE = 7;
 // 12:03 UTC is 7:03 in New York in winter and 8:03 in summer.

@@ -11,7 +11,7 @@ import { parseRestrictions, restrictionStart } from "../src/hazards/flightRestri
 import { parseQuakes, quakeSeverity } from "../src/hazards/quakes";
 import { parseNwsPoint, parseWeatherAlerts, weatherSeverity } from "../src/hazards/weather";
 import { fireSeverity, parseWildfires } from "../src/hazards/wildfires";
-import { BRIEF_CRON, HAZARD_CRON, NEWS_CRON } from "../src/schedule";
+import { BRIEF_CRON, HAZARD_CRON, NEWS_CRON, OUTAGE_CRON } from "../src/schedule";
 import type { Site } from "../src/types";
 import { createEnv, NOW } from "./helpers";
 
@@ -379,6 +379,8 @@ function stubHazardFeeds(overrides: Record<string, (url: URL) => Response> = {})
       const query = url.searchParams.get("q");
       return new Response(query === "%hbomax%" ? CRT_HBOMAX : query === "%skydance%" ? CRT_SKYDANCE : "[]");
     }
+    if (url.hostname === "vadimklimenko.com") return new Response('{"states":{}}');
+    if (url.hostname === "t.me") return new Response("<html></html>");
     if (url.hostname === "api.sendgrid.com" || url.hostname === "api.twilio.com") return new Response("{}", { status: 202 });
     throw new Error(`unexpected request to ${url.hostname}`);
   });
@@ -411,6 +413,7 @@ describe("runHazards", () => {
       ["aircraft", 1, null],
       ["faa_tfr", 1, null],
       ["dispatch", 0, null],
+      ["air_raids", 0, null],
       ["travel_advisory", 1, null],
       ["domains", 2, null],
     ]);
@@ -515,7 +518,7 @@ describe("hazard API and schedule", () => {
 
   it("runs each scheduled job on its own cron, and the crons match the config", async () => {
     const config = readFileSync("wrangler.toml", "utf8");
-    expect(config).toContain(`crons = ["${NEWS_CRON}", "${HAZARD_CRON}", "${BRIEF_CRON}"]`);
+    expect(config).toContain(`crons = ["${NEWS_CRON}", "${HAZARD_CRON}", "${BRIEF_CRON}", "${OUTAGE_CRON}"]`);
 
     const env = await envWithSites();
     const requested = stubHazardFeeds();

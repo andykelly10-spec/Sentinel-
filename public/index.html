@@ -33,6 +33,12 @@
 
 <nav class="rail" id="rail" aria-label="Map layers"></nav>
 
+<form class="map-search" id="map-search" role="search" autocomplete="off">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/></svg>
+  <input id="search-input" type="search" placeholder="Search a city, address or site" aria-label="Search the map" aria-autocomplete="list" aria-controls="search-results" aria-expanded="false" enterkeyhint="search">
+  <ul class="search-results" id="search-results" role="listbox" aria-label="Search results" hidden></ul>
+</form>
+
 <aside class="panel alerts" id="alerts-panel" aria-label="Alerts">
   <div class="panel-head">
     <h2>Alerts</h2>
@@ -67,6 +73,8 @@
     <div class="tabs" role="group" aria-label="News view">
       <button data-news-tab="tv" aria-pressed="true">Live TV</button>
       <button data-news-tab="headlines" aria-pressed="false">Headlines</button>
+      <button data-news-tab="airraids" aria-pressed="false">Air raids</button>
+      <button data-news-tab="outages" aria-pressed="false">Outages</button>
     </div>
     <button class="icon-btn" id="newsroom-close" aria-label="Close news">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>

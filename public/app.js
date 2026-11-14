@@ -31,6 +31,8 @@ const SOURCE_NAMES = {
   domains: "Lookalike domains (certificate logs)",
   dispatch: "City 911 dispatch (Seattle Fire, San Francisco Police)",
   nixle: "Nixle police and agency alerts (your ZIP code)",
+  air_raids: "Air raids: Ukraine alert status, Ukrainian Air Force, Russian Defence Ministry",
+  outages: "Service status pages (14 providers) and IODA internet outages",
 };
 const BRIEF_COLORS = { critical: "var(--critical)", high: "var(--high)", medium: "var(--medium)", low: "var(--low)" };
 const WEATHER_CODES = {
@@ -572,6 +574,64 @@ const LAYERS = [
     },
   },
   {
+    id: "airraids",
+    label: "Air raids: Ukraine alerts, missiles and drones; Russian interceptions",
+    icon: "M12 2l3 7h-6zM10 9h4v8l-2 3-2-3zM8 13l2 2M16 13l-2 2",
+    on: true,
+    every: 60,
+    async load(group) {
+      const data = await api("/api/airraids");
+      const styles = {
+        active: { color: "#ff5252", fillColor: "#ff5252", fillOpacity: 0.32, weight: 1.5, radius: 55000 },
+        partial: { color: "#ff8d5c", fillColor: "#ff8d5c", fillOpacity: 0.2, weight: 1, radius: 40000 },
+        standing: { color: "#ff5252", fillColor: "#ff5252", fillOpacity: 0.08, weight: 1, dashArray: "4 4", radius: 45000 },
+      };
+      const states = {
+        active: (oblast) => `Air raid alert since ${new Date(oblast.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${ago(oblast.since)})`,
+        partial: (oblast) => `Alert in ${oblast.districts} district${oblast.districts === 1 ? "" : "s"} of the oblast`,
+        standing: () => "Under a standing alert since 2022 (occupied territory)",
+      };
+      let count = 0;
+      for (const oblast of data.oblasts) {
+        const style = styles[oblast.state];
+        if (!style) continue;
+        if (oblast.state !== "standing") count++;
+        group.addLayer(
+          L.circle([oblast.lat, oblast.lon], { ...style, className: oblast.state === "active" ? "raid-active" : "" })
+            .bindTooltip(oblast.name, { direction: "center", className: "raid-tip" })
+            .bindPopup(popup("Air raid alert", oblast.name, el("p", {}, states[oblast.state](oblast)), el("p", { class: "muted" }, "Source: Ukraine air raid alert system"))),
+        );
+      }
+      // Several posts about one region are fanned out so each can be opened.
+      const placed = new Map();
+      const colors = { kinzhal: "#ff2d55", ballistic: "#ff2d55", cruise: "#ff5252", missile: "#ff5252", bombers: "#ff8d5c", kab: "#b48cff", jet_drone: "#fab219", drone: "#fab219", other: "#8a93a0" };
+      for (const threat of data.threats) {
+        const region = threat.regions.at(-1);
+        if (!region) continue;
+        const n = placed.get(region.name) ?? 0;
+        placed.set(region.name, n + 1);
+        const angle = n * 2.4;
+        const spread = n === 0 ? 0 : 0.12 + n * 0.03;
+        const point = [region.lat + Math.sin(angle) * spread, region.lon + Math.cos(angle) * spread * 1.5];
+        count++;
+        group.addLayer(
+          L.circleMarker(point, { radius: threat.missile ? 8 : 5, color: "#000", weight: 1, fillColor: colors[threat.kind], fillOpacity: 0.95 }).bindPopup(() => threatPopup(threat)),
+        );
+      }
+      for (const report of data.interceptions) {
+        for (const region of report.regions) {
+          count++;
+          group.addLayer(
+            L.circleMarker([region.lat, region.lon], { radius: 7, color: "#000", weight: 1, fillColor: "#b48cff", fillOpacity: 0.85 })
+              .bindTooltip(report.count ? String(report.count) : "", { permanent: Boolean(report.count) && report.regions.length === 1, direction: "right", className: "raid-tip" })
+              .bindPopup(() => interceptionPopup(report)),
+          );
+        }
+      }
+      return count;
+    },
+  },
+  {
     id: "iss",
     label: "International Space Station",
     icon: "M4 14l6-6 4 4-6 6zM12 10l2-2M15 5l4 4M17 3l4 4M3 21a6 6 0 004-2",
@@ -913,6 +973,174 @@ const CHANNELS = [
 const HEADLINE_FILTERS = ["All", "World", "US", "UK", "Los Angeles", "New York", "Washington DC", "London"];
 const newsroom = { tab: "tv", filter: "All", timer: null };
 
+// ---------- air raids ----------
+
+function translated(item) {
+  const link = safeUrl(item.translate, ["translate.google.com"]);
+  const source = safeUrl(item.url, ["t.me"]);
+  return el(
+    "p",
+    { class: "links" },
+    source ? el("a", { href: source, target: "_blank", rel: "noopener noreferrer" }, "Original post") : null,
+    source && link ? " · " : null,
+    link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer" }, "Translate") : null,
+  );
+}
+
+function threatPopup(threat) {
+  const where = threat.regions.map((region) => region.name).join(" → ");
+  return popup(
+    `Ukrainian Air Force · ${ago(threat.time)}`,
+    threat.label,
+    where ? el("p", {}, where) : null,
+    el("p", { class: "muted original", lang: "uk" }, threat.text),
+    translated(threat),
+  );
+}
+
+function interceptionPopup(report) {
+  return popup(`Russian Defence Ministry · ${ago(report.time)}`, "Interceptions over Russia", el("p", {}, report.summary), el("p", { class: "muted original", lang: "ru" }, report.text), translated(report));
+}
+
+async function renderAirRaids() {
+  const body = document.getElementById("newsroom-body");
+  if (!body.querySelector(".raids")) body.replaceChildren(el("p", { class: "note" }, "Loading air raid alerts…"));
+  let data;
+  try {
+    data = await api("/api/airraids");
+  } catch (error) {
+    body.replaceChildren(el("div", { class: "result error" }, `Could not load air raid alerts. ${error.message}`));
+    return;
+  }
+  if (newsroom.tab !== "airraids" || document.getElementById("newsroom").hidden) return;
+  const active = data.oblasts.filter((oblast) => oblast.state === "active");
+  const partial = data.oblasts.filter((oblast) => oblast.state === "partial");
+  const failed = Object.keys(data.errors ?? {});
+  const list = (items, render) => (items.length ? el("ol", { class: "headlines" }, ...items.map(render)) : el("p", { class: "note" }, "Nothing reported."));
+  body.replaceChildren(
+    el(
+      "div",
+      { class: "raids" },
+      el(
+        "div",
+        { class: `raid-summary ${active.length >= 12 ? "sev-high" : active.length ? "sev-medium" : ""}` },
+        el("span", { class: "big" }, String(active.length)),
+        el("span", {}, ` of 24 Ukrainian regions under air raid alert${partial.length ? `, ${partial.length} more in part` : ""}.`),
+      ),
+      active.length || partial.length
+        ? el(
+            "p",
+            { class: "chips" },
+            ...active.map((oblast) => el("span", { class: "chip sev-critical" }, `${oblast.name} · ${ago(oblast.since)}`)),
+            ...partial.map((oblast) => el("span", { class: "chip" }, `${oblast.name} (part)`)),
+          )
+        : null,
+      el("p", { class: "note" }, `Updated ${ago(data.updatedAt)}. Crimea, Sevastopol and Luhansk are under standing alerts and are not counted.${failed.length ? ` Not answering just now: ${failed.join(", ")}.` : ""}`),
+      el("h3", {}, "Ukrainian Air Force · last 3 hours"),
+      list(data.threats, (threat) =>
+        el(
+          "li",
+          { class: threat.missile ? "missile" : "" },
+          el("div", { class: "meta" }, `${new Date(threat.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${ago(threat.time)}${threat.regions.length ? ` · ${threat.regions.map((region) => region.name).join(" → ")}` : ""}`),
+          el("strong", {}, threat.label),
+          el("p", { class: "original", lang: "uk" }, threat.text),
+          translated(threat),
+        ),
+      ),
+      el("h3", {}, "Russian Defence Ministry · interceptions, last 24 hours"),
+      list(data.interceptions, (report) =>
+        el("li", {}, el("div", { class: "meta" }, ago(report.time)), el("strong", {}, report.summary), el("p", { class: "original", lang: "ru" }, report.text), translated(report)),
+      ),
+    ),
+  );
+}
+
+// ---------- outages ----------
+
+const OUTAGE_LEVEL = { high: "down", medium: "partial", low: "minor" };
+
+async function renderOutages() {
+  const body = document.getElementById("newsroom-body");
+  if (!body.querySelector(".outages")) body.replaceChildren(el("p", { class: "note" }, "Checking service status…"));
+  let data;
+  try {
+    data = await api("/api/outages");
+  } catch (error) {
+    body.replaceChildren(el("div", { class: "result error" }, `Could not load service status. ${error.message}`));
+    return;
+  }
+  if (newsroom.tab !== "outages" || document.getElementById("newsroom").hidden) return;
+  const worst = (provider) => provider.outages.reduce((top, outage) => (rank(outage.severity) > rank(top) ? outage.severity : top), "low");
+  const providers = [...data.providers].sort((a, b) => (b.outages.length ? rank(worst(b)) + 1 : 0) - (a.outages.length ? rank(worst(a)) + 1 : 0));
+  const serious = data.providers.filter((provider) => provider.outages.some((outage) => outage.severity !== "low")).length;
+  body.replaceChildren(
+    el(
+      "div",
+      { class: "outages" },
+      el(
+        "div",
+        { class: `raid-summary ${serious ? "sev-high" : ""}` },
+        el("span", { class: "big" }, String(serious)),
+        el("span", {}, ` of ${data.providers.length} services with a significant outage now.`),
+      ),
+      el("p", { class: "note" }, `From each provider's official status page, updated ${ago(data.updatedAt)}. Minor and long-running problems are listed here but do not raise alerts.`),
+      el(
+        "ul",
+        { class: "services" },
+        ...providers.map((provider) => {
+          const level = provider.error ? "unknown" : provider.outages.length ? OUTAGE_LEVEL[worst(provider)] : "ok";
+          const page = safeUrl(provider.page);
+          return el(
+            "li",
+            { class: `service ${level}` },
+            el(
+              "div",
+              { class: "service-head" },
+              el("span", { class: "light", "aria-hidden": "true" }),
+              page ? el("a", { href: page, target: "_blank", rel: "noopener noreferrer" }, provider.name) : provider.name,
+              el("span", { class: "what" }, provider.what),
+              el("span", { class: "state" }, provider.error ? "No answer" : provider.outages.length ? `${provider.outages.length} open` : "Operational"),
+            ),
+            ...provider.outages.map((outage) => {
+              const link = safeUrl(outage.url);
+              return el(
+                "div",
+                { class: `service-issue sev-${outage.severity}` },
+                el("div", { class: "meta" }, `${outage.severity}${outage.status ? ` · ${outage.status}` : ""}${outage.started ? ` · started ${ago(outage.started)}` : ""}`),
+                link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer" }, outage.title) : outage.title,
+                outage.detail ? el("p", {}, outage.detail) : null,
+              );
+            }),
+          );
+        }),
+      ),
+      el("h3", {}, "Country-wide internet outages · IODA"),
+      data.internetError
+        ? el("p", { class: "note" }, `Not answering just now: ${data.internetError}.`)
+        : data.internet.length
+          ? el(
+              "ul",
+              { class: "services" },
+              ...data.internet.map((outage) =>
+                el(
+                  "li",
+                  { class: `service ${outage.signals.some((signal) => signal === "bgp" || signal === "ping-slash24") ? "partial" : "minor"}` },
+                  el(
+                    "div",
+                    { class: "service-head" },
+                    el("span", { class: "light", "aria-hidden": "true" }),
+                    el("a", { href: `https://ioda.inetintel.cc.gatech.edu/country/${encodeURIComponent(outage.code)}`, target: "_blank", rel: "noopener noreferrer" }, outage.country),
+                    el("span", { class: "what" }, `since ${ago(outage.since)} · seen in ${outage.signals.join(", ")}`),
+                  ),
+                ),
+              ),
+            )
+          : el("p", { class: "note" }, "No country-wide internet outages detected."),
+      el("p", { class: "note" }, "Signals: bgp = internet routes withdrawn; ping-slash24 = networks stopped answering; gtr = drop in Google traffic (least reliable on its own)."),
+    ),
+  );
+}
+
 function closeNewsroom() {
   const panel = document.getElementById("newsroom");
   if (panel.hidden) return;
@@ -931,7 +1159,13 @@ function openNewsroom(tab = newsroom.tab) {
   }
   clearInterval(newsroom.timer);
   if (tab === "tv") renderTvWall();
-  else {
+  else if (tab === "outages") {
+    renderOutages();
+    newsroom.timer = setInterval(renderOutages, 2 * 60_000);
+  } else if (tab === "airraids") {
+    renderAirRaids();
+    newsroom.timer = setInterval(renderAirRaids, 60_000);
+  } else {
     renderHeadlines();
     newsroom.timer = setInterval(renderHeadlines, 5 * 60_000);
   }
@@ -1122,6 +1356,8 @@ function openFeeds() {
     el("h3", {}, `Hazards, checked ${hazardRun ? ago(hazardRun.finishedAt) : "never"}`),
     el("p", { class: "note" }, "Counts are hazards near your sites. Travel advisories and lookalike domains are checked once an hour."),
     el("table", {}, el("tbody", {}, ...sourceRows(hazardRun, "hazard"))),
+    el("h3", {}, `Outages, checked ${state.info?.lastOutageRun ? ago(state.info.lastOutageRun.finishedAt) : "never"}`),
+    el("table", {}, el("tbody", {}, ...sourceRows(state.info?.lastOutageRun, "outage"))),
     el("h3", {}, "Map layers"),
     el(
       "table",
@@ -1370,6 +1606,174 @@ function locateMe() {
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
   );
 }
+
+// ----- map search -----
+
+const search = {
+  form: document.getElementById("map-search"),
+  input: document.getElementById("search-input"),
+  list: document.getElementById("search-results"),
+  results: [],
+  active: -1,
+  marker: null,
+  query: "",
+};
+
+function siteResults(query) {
+  const needle = query.toLowerCase();
+  return (state.info?.sites ?? [])
+    .filter((site) => [site.name, site.city, site.address, site.area, site.country].join(" ").toLowerCase().includes(needle))
+    .slice(0, 6)
+    .map((site) => ({ kind: "Site", label: site.name, detail: [site.address, site.city, site.country].filter(Boolean).join(", "), lat: site.lat, lon: site.lon, zoom: 16 }));
+}
+
+function coordinateResult(query) {
+  const match = query.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+  if (!match) return [];
+  const [lat, lon] = [Number(match[1]), Number(match[2])];
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? [{ kind: "Point", label: `${lat}, ${lon}`, detail: "Coordinates", lat, lon, zoom: 15 }] : [];
+}
+
+function showResults(results, hint) {
+  search.results = results;
+  search.active = -1;
+  search.list.replaceChildren(
+    ...results.map((result, index) =>
+      el(
+        "li",
+        { role: "option", id: `search-option-${index}`, "aria-selected": "false" },
+        el(
+          "button",
+          { type: "button", tabindex: "-1", onclick: () => chooseResult(result) },
+          el("span", { class: "kind" }, result.kind),
+          el("span", { class: "label" }, result.label),
+          result.detail ? el("span", { class: "detail" }, result.detail) : null,
+        ),
+      ),
+    ),
+    hint ? el("li", { class: "hint", role: "presentation" }, hint) : null,
+  );
+  const open = results.length > 0 || Boolean(hint);
+  search.list.hidden = !open;
+  search.input.setAttribute("aria-expanded", String(open));
+}
+
+function hideResults() {
+  search.list.hidden = true;
+  search.input.setAttribute("aria-expanded", "false");
+  search.input.removeAttribute("aria-activedescendant");
+}
+
+function highlight(index) {
+  const options = search.list.querySelectorAll("[role=option]");
+  if (!options.length) return;
+  search.active = (index + options.length) % options.length;
+  options.forEach((option, each) => option.setAttribute("aria-selected", String(each === search.active)));
+  options[search.active].scrollIntoView({ block: "nearest" });
+  search.input.setAttribute("aria-activedescendant", options[search.active].id);
+}
+
+async function searchPlaces(query) {
+  const local = [...coordinateResult(query), ...siteResults(query)];
+  showResults(local, "Searching places…");
+  let places = [];
+  try {
+    const found = await api(`/api/feeds/geocode?q=${encodeURIComponent(query)}`);
+    places = found.map((place) => ({
+      kind: place.addresstype ? place.addresstype.replace(/_/g, " ") : "Place",
+      label: place.name || place.display_name.split(",")[0],
+      detail: place.display_name,
+      lat: Number(place.lat),
+      lon: Number(place.lon),
+      bbox: place.boundingbox?.map(Number),
+    }));
+  } catch (error) {
+    showResults(local, `Place search failed: ${error.message}`);
+    return;
+  }
+  if (search.query !== query) return;
+  const results = [...local, ...places];
+  showResults(results, results.length ? null : "No places found. Try adding the country, e.g. “Springfield, Illinois”.");
+  // Go straight to the best match; the list stays open for the others.
+  if (results.length) chooseResult(results[0], { keepOpen: true });
+}
+
+function chooseResult(result, { keepOpen = false } = {}) {
+  if (!keepOpen) {
+    hideResults();
+    search.input.value = result.label;
+  }
+  search.marker?.remove();
+  const [south, north, west, east] = result.bbox ?? [];
+  if (result.bbox && [south, north, west, east].every(Number.isFinite) && (north - south > 0.002 || east - west > 0.002)) {
+    map.flyToBounds([[south, west], [north, east]], { maxZoom: 16, duration: 1, paddingTopLeft: [60, 60], paddingBottomRight: [40, 60] });
+  } else {
+    map.flyTo([result.lat, result.lon], result.zoom ?? 16, { duration: 1 });
+  }
+  const nearest = (state.info?.sites ?? [])
+    .map((site) => ({ site, miles: distanceMiles(result.lat, result.lon, site.lat, site.lon) }))
+    .sort((a, b) => a.miles - b.miles)[0];
+  search.marker = L.marker([result.lat, result.lon], {
+    icon: L.divIcon({ className: "", html: '<div class="search-marker"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }),
+    keyboard: false,
+    zIndexOffset: 900,
+  })
+    .bindPopup(
+      popup(
+        result.kind,
+        result.label,
+        result.detail && result.detail !== result.label ? el("p", { class: "muted" }, result.detail) : null,
+        nearest && result.kind !== "Site" ? el("p", {}, `Nearest site: ${nearest.site.name}, ${miles(nearest.miles)} mi away.`) : null,
+      ),
+      LOCATION_POPUP,
+    )
+    .addTo(map);
+  if (!keepOpen) map.once("moveend", () => search.marker?.openPopup());
+}
+
+search.input.addEventListener("input", () => {
+  const query = search.input.value.trim();
+  search.query = query;
+  if (!query) return hideResults();
+  const local = [...coordinateResult(query), ...siteResults(query)];
+  showResults(local, query.length >= 2 ? "Press Enter to search cities, addresses and places worldwide." : null);
+});
+
+search.input.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    highlight(search.active + 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    highlight(search.active - 1);
+  } else if (event.key === "Escape") {
+    hideResults();
+    search.input.blur();
+  }
+});
+
+search.form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const query = search.input.value.trim();
+  if (search.active >= 0 && search.results[search.active]) return chooseResult(search.results[search.active]);
+  if (query.length < 2) return;
+  search.query = query;
+  searchPlaces(query);
+});
+
+document.addEventListener("click", (event) => {
+  if (!search.form.contains(event.target)) hideResults();
+});
+
+// "/" jumps to the search box, as on many sites.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey) return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? "") || document.activeElement?.isContentEditable;
+  if (typing) return;
+  event.preventDefault();
+  search.input.focus();
+  search.input.select();
+});
 
 // ----- alerts near you -----
 

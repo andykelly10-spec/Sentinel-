@@ -27,11 +27,13 @@ import {
 } from "./db";
 import { proxyFeed } from "./feeds";
 import { latestHeadlines } from "./headlines";
+import { cachedAirRaidPicture } from "./hazards/airRaids";
 import { activeLocation, clearMyLocation, updateMyLocation, validUpdate } from "./me";
-import { runHazards } from "./hazards";
+import { runHazards, runOutages } from "./hazards";
+import { cachedOutagePicture } from "./hazards/outages";
 import { emailConfigured, smsConfigured } from "./notify";
 import { runPipeline } from "./pipeline";
-import { BRIEF_CRON, HAZARD_CRON, HOURLY_MINUTE } from "./schedule";
+import { BRIEF_CRON, HAZARD_CRON, HOURLY_MINUTE, OUTAGE_CRON } from "./schedule";
 import { locateSites, parseSitesCsv } from "./sites";
 import { ALERT_CATEGORIES, ALERT_STATUSES, SEVERITIES, type AlertStatus, type Env } from "./types";
 
@@ -73,19 +75,28 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
 
   if (request.method === "GET" && url.pathname === "/api/status") {
     const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    const [lastRun, lastHazardRun, open, activity, sites, me] = await Promise.all([
+    const [lastRun, lastHazardRun, lastOutageRun, open, activity, sites, me] = await Promise.all([
       latestRun(env.DB, "news"),
       latestRun(env.DB, "hazards"),
+      latestRun(env.DB, "outages"),
       openCounts(env.DB),
       hourlyActivity(env.DB, dayAgo),
       listSites(env.DB),
       activeLocation(env.DB, new Date()),
     ]);
-    return json({ lastRun, lastHazardRun, open, activity, sites, me, email: emailConfigured(env), sms: smsConfigured(env) });
+    return json({ lastRun, lastHazardRun, lastOutageRun, open, activity, sites, me, email: emailConfigured(env), sms: smsConfigured(env) });
   }
 
   if (request.method === "GET" && url.pathname === "/api/headlines") {
     return json(await latestHeadlines(env.DB));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/outages") {
+    return json(await cachedOutagePicture(env.DB));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/airraids") {
+    return json(await cachedAirRaidPicture(env.DB));
   }
 
   if (request.method === "GET" && url.pathname === "/api/brief") {
@@ -245,6 +256,11 @@ export default {
       const hourly = new Date(controller.scheduledTime).getUTCMinutes() === HOURLY_MINUTE;
       const run = await runHazards(env, new Date(controller.scheduledTime), hourly);
       console.log(`hazards found=${run.fetched} new=${run.newItems} errors=${JSON.stringify(run.errors)}`);
+      return;
+    }
+    if (controller.cron === OUTAGE_CRON) {
+      const run = await runOutages(env, new Date(controller.scheduledTime));
+      console.log(`outages found=${run.fetched} new=${run.newItems} errors=${JSON.stringify(run.errors)}`);
       return;
     }
     if (controller.cron === BRIEF_CRON) {

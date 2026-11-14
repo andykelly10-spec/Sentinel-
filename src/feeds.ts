@@ -106,6 +106,16 @@ const FEEDS: Record<string, Feed> = {
     },
     maxAge: 600,
   },
+  // Place search for the map's search box (OpenStreetMap's Nominatim). Its
+  // usage policy rules out search-as-you-type, so this runs on Enter only.
+  geocode: {
+    url: (params) => {
+      const query = (params.get("q") ?? "").trim();
+      if (query.length < 2 || query.length > 200) return null;
+      return `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=en&q=${encodeURIComponent(query)}`;
+    },
+    maxAge: 86_400,
+  },
   "weather-alerts": {
     url: (params) => {
       const point = coordinates(params);

@@ -1,14 +1,16 @@
-import { expireAlerts, extendExpiry, findExistingIds, insertItems, listSites, recordRun, saveSiteZones, type RunRecord } from "../db";
+import { expireAlerts, extendExpiry, findExistingIds, insertItems, listSites, recordRun, saveSiteZones, type RunKind, type RunRecord } from "../db";
 import { notify } from "../notify";
 import type { Env, HazardItem, Site, SourceName, SourceResult } from "../types";
 import { advisoryHazards } from "./advisories";
 import { aircraftHazards } from "./aircraft";
+import { airRaidHazards } from "./airRaids";
 import { activeLocation, withMyLocation } from "../me";
 import { disasterHazards } from "./disasters";
 import { dispatchHazards } from "./dispatch";
 import { domainHazards } from "./domains";
 import { restrictionHazards } from "./flightRestrictions";
 import { nixleHazards } from "./nixle";
+import { outageHazards } from "./outages";
 import { quakeHazards } from "./quakes";
 import { resolveZones, weatherHazards } from "./weather";
 import { wildfireHazards } from "./wildfires";
@@ -49,7 +51,7 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
   sites = withMyLocation(sites, me);
 
   const wrap = (items: Promise<HazardItem[]>): Promise<HazardCheck> => items.then((list) => ({ items: list }));
-  const checks: Array<{ source: SourceName; run: () => Promise<HazardCheck> }> = [
+  const checks: Check[] = [
     { source: "nws", run: () => wrap(weatherHazards(sites)) },
     { source: "usgs", run: () => wrap(quakeHazards(sites)) },
     { source: "wildfire", run: () => wrap(wildfireHazards(sites, now)) },
@@ -57,6 +59,7 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
     { source: "aircraft", run: () => wrap(aircraftHazards(sites, now)) },
     { source: "faa_tfr", run: () => wrap(restrictionHazards(sites, now)) },
     { source: "dispatch", run: () => wrap(dispatchHazards(sites, now)) },
+    { source: "air_raids", run: () => wrap(airRaidHazards(sites, now)) },
     ...(me ? [{ source: "nixle" as const, run: () => wrap(nixleHazards(me, now)) }] : []),
     ...(hourly
       ? [
@@ -65,6 +68,14 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
         ]
       : []),
   ];
+  return storeChecks(env, now, "hazards", checks, errors);
+}
+
+type Check = { source: SourceName; run: () => Promise<HazardCheck> };
+
+// Stores what a set of checks found, lets ongoing hazards live on, expires
+// the rest, sends notifications and records the run.
+async function storeChecks(env: Env, now: Date, kind: RunKind, checks: Check[], errors: string[]): Promise<RunRecord> {
   const settled = await Promise.allSettled(checks.map((check) => check.run()));
 
   const sources: SourceResult[] = [];
@@ -97,7 +108,7 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
   errors.push(...(await notify(env, now)));
 
   const run: RunRecord = {
-    kind: "hazards",
+    kind,
     startedAt: now.toISOString(),
     finishedAt: new Date().toISOString(),
     fetched: items.length,
@@ -108,4 +119,12 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
   };
   await recordRun(env.DB, run);
   return run;
+}
+
+// Outages run on their own schedule: the status feeds are many requests, and
+// Cloudflare limits how many one run can make.
+export async function runOutages(env: Env, now: Date = new Date()): Promise<RunRecord> {
+  const sites = withMyLocation(await listSites(env.DB), await activeLocation(env.DB, now));
+  const wrap = (items: Promise<HazardItem[]>): Promise<HazardCheck> => items.then((list) => ({ items: list }));
+  return storeChecks(env, now, "outages", [{ source: "outages", run: () => wrap(outageHazards(env.DB, sites, now)) }], []);
 }

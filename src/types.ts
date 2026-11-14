@@ -56,7 +56,9 @@ export type SourceName =
   | "travel_advisory"
   | "domains"
   | "dispatch"
-  | "nixle";
+  | "nixle"
+  | "air_raids"
+  | "outages";
 
 export interface RawItem {
   source: SourceName;

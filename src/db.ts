@@ -235,7 +235,7 @@ export async function markSent(
     .run();
 }
 
-export type RunKind = "news" | "hazards";
+export type RunKind = "news" | "hazards" | "outages";
 
 export interface RunRecord {
   kind?: RunKind;

@@ -86,6 +86,8 @@ function stubServices(extra: Record<string, (url: URL) => Response> = {}) {
     if (url.hostname === "www.gdacs.org") return new Response('{"features":[]}');
     if (url.hostname === "api.adsb.lol") return new Response('{"ac":[]}');
     if (url.hostname === "tfr.faa.gov") return new Response("[]");
+    if (url.hostname === "vadimklimenko.com") return new Response('{"states":{}}');
+    if (url.hostname === "t.me") return new Response("<html></html>");
     throw new Error(`unexpected request to ${url.hostname}`);
   });
   return requested;

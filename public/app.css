@@ -135,6 +135,20 @@ h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: 0.42em; line-
 .me-marker span::after { content: ""; position: absolute; inset: -9px; border-radius: 50%; border: 2px solid #2fd3e6; animation: pulse 1.8s ease-out infinite; }
 .sev-text-critical { color: #ff5252; } .sev-text-high { color: #ff8d5c; } .sev-text-medium { color: #fab219; } .sev-text-low { color: #8a93a0; }
 
+/* Map search */
+.map-search { position: fixed; z-index: 450; top: calc(var(--top) + 10px); left: calc(var(--rail) + 22px); width: min(360px, calc(100vw - var(--rail) - 120px)); }
+.map-search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+.map-search input { width: 100%; font: inherit; font-size: 14px; padding: 9px 14px 9px 36px; border-radius: 999px; background: var(--panel); color: var(--text); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.map-search input:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.search-results { list-style: none; margin: 6px 0 0; padding: 4px; border-radius: 10px; background: rgba(12, 15, 18, 0.97); border: 1px solid var(--line); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); max-height: 340px; overflow-y: auto; }
+.search-results li button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; background: none; border: 0; color: var(--text); cursor: pointer; font: inherit; }
+.search-results li button:hover, .search-results li[aria-selected="true"] button { background: rgba(255, 255, 255, 0.08); }
+.search-results .kind { font: 9.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); margin-right: 6px; }
+.search-results .label { font-weight: 600; }
+.search-results .detail { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.search-results .hint { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+.search-marker { width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--gold); background: rgba(227, 171, 53, 0.25); box-shadow: 0 0 12px rgba(227, 171, 53, 0.8); }
+
 /* Alerts near you */
 .locate-me.watching { color: var(--gold); border-color: var(--gold) !important; box-shadow: 0 0 12px rgba(227, 171, 53, 0.45); }
 .near-controls { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
@@ -262,6 +276,43 @@ select { font-size: 12px; padding: 4px 6px; border-radius: 4px; background: var(
 .headlines a { color: var(--text); font-weight: 600; text-decoration: none; line-height: 1.35; }
 .headlines a:hover { text-decoration: underline; }
 .headlines p { margin: 4px 0 0; font-size: 13px; color: #aeb5bf; }
+.raids h3 { font: 600 11px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); margin: 18px 0 4px; }
+.raid-summary { display: flex; align-items: baseline; gap: 4px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--line); border-left: 4px solid var(--low); }
+.raid-summary.sev-medium { border-left-color: var(--medium); }
+.raid-summary.sev-high { border-left-color: var(--critical); }
+.raid-summary .big { font: 600 28px var(--mono); }
+.raids .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.raids .headlines li.missile { border-left: 3px solid var(--critical); padding-left: 10px; }
+.raids .headlines strong { display: block; }
+.original { font-size: 13px; color: #c7cdd4; }
+.popup .original { margin: 6px 0; }
+.links { font-size: 12px; }
+.links a { color: var(--cyan); }
+.services { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.service, .service-issue { min-width: 0; overflow-wrap: anywhere; }
+.service { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.service-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.service-head a { color: var(--text); font-weight: 600; text-decoration: none; }
+.service-head a:hover { text-decoration: underline; }
+.service .what { color: var(--muted); font-size: 12px; }
+.service .state { margin-left: auto; font: 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.service .light { width: 10px; height: 10px; border-radius: 50%; background: #1fd67a; box-shadow: 0 0 6px currentColor; color: #1fd67a; flex: none; }
+.service.minor .light { background: var(--low); color: var(--low); }
+.service.partial .light { background: var(--medium); color: var(--medium); }
+.service.down .light { background: var(--critical); color: var(--critical); }
+.service.unknown .light { background: transparent; border: 1px solid var(--muted); box-shadow: none; }
+.service.down { border-color: rgba(255, 82, 82, 0.5); }
+.service-issue { margin: 8px 0 0 18px; padding-left: 10px; border-left: 3px solid var(--low); }
+.service-issue.sev-medium { border-left-color: var(--medium); }
+.service-issue.sev-high { border-left-color: var(--critical); }
+.service-issue .meta { font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.service-issue a { color: var(--text); text-decoration: none; font-size: 13.5px; }
+.service-issue a:hover { text-decoration: underline; }
+.service-issue p { margin: 3px 0 0; font-size: 12.5px; color: #aeb5bf; }
+.raid-tip { background: rgba(7, 9, 11, 0.8); border: 0; color: #fff; font: 600 10px var(--mono); letter-spacing: 0.06em; box-shadow: none; padding: 1px 4px; }
+.raid-tip::before { display: none; }
+.raid-active { animation: raid 2s ease-in-out infinite; }
+@keyframes raid { 50% { fill-opacity: 0.12; } }
 
 /* Drawer content */
 .drawer-body h3 { font: 500 11px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin: 18px 0 8px; }
@@ -307,7 +358,7 @@ code { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); }
 .online.warn { color: var(--medium); }
 
 @media (prefers-reduced-motion: reduce) {
-  .ticker-track, .incident-marker.live::after, .me-marker span::after, .locate-me.busy svg, .near-label .dot { animation: none; }
+  .ticker-track, .incident-marker.live::after, .me-marker span::after, .locate-me.busy svg, .near-label .dot, .raid-active { animation: none; }
 }
 
 @media (max-width: 1500px) { .readouts .drop-1 { display: none; } }
