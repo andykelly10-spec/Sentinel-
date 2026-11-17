@@ -938,7 +938,9 @@ function renderReadouts() {
   const info = state.info;
   const run = info?.lastRun;
   const stale = !run || Date.now() - new Date(run.finishedAt).getTime() > 40 * 60000;
-  const failing = (run?.sources ?? []).filter((source) => source.error).length;
+  // Google News refuses Cloudflare most of the time; Bing carries the same stories,
+  // so it alone does not mark the status as degraded.
+  const failing = (run?.sources ?? []).filter((source) => source.error && source.source !== "google_news").length;
   const active = LAYERS.filter((layer) => layer.active);
   const entities = active.reduce((sum, layer) => sum + (layer.count ?? 0), 0);
   // `drop` names the readouts the stylesheet hides first on narrower screens.

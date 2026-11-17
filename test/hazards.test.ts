@@ -410,10 +410,11 @@ describe("runHazards", () => {
       ["usgs", 1, null],
       ["wildfire", 1, null],
       ["gdacs", 1, null],
-      ["aircraft", 1, null],
       ["faa_tfr", 1, null],
       ["dispatch", 0, null],
       ["air_raids", 0, null],
+      // Checked hourly only, to stay inside adsb.lol's rate limit.
+      ["aircraft", 1, null],
       ["travel_advisory", 1, null],
       ["domains", 2, null],
     ]);
@@ -449,7 +450,7 @@ describe("runHazards", () => {
     await runHazards(env, NOW, false);
 
     // Two days later the weather warning has ended and the quake window has passed;
-    // the fire and the aircraft are no longer reported.
+    // the fire is no longer reported. (Aircraft are checked hourly, so not here.)
     stubHazardFeeds({
       "api.weather.gov": () => new Response('{"features":[]}'),
       "services3.arcgis.com": () => new Response('{"features":[]}'),
@@ -459,11 +460,7 @@ describe("runHazards", () => {
     const open = await listAlerts(env.DB, { status: "new", limit: 50 });
     // The cyclone runs until the 14th plus a day, so it is still open.
     expect(open.map((alert) => alert.source).sort()).toEqual(["faa_tfr", "gdacs", "usgs"]);
-    expect((await listAlerts(env.DB, { status: "expired", limit: 50 })).map((alert) => alert.source).sort()).toEqual([
-      "aircraft",
-      "nws",
-      "wildfire",
-    ]);
+    expect((await listAlerts(env.DB, { status: "expired", limit: 50 })).map((alert) => alert.source).sort()).toEqual(["nws", "wildfire"]);
   });
 
   it("moves on to the next domain names when the certificate search fails", async () => {
@@ -479,7 +476,7 @@ describe("runHazards", () => {
     stubHazardFeeds({ "www.gdacs.org": () => new Response("down", { status: 503 }) });
     const run = await runHazards(env, NOW, false);
     expect(run.sources.find((source) => source.source === "gdacs")).toEqual({ source: "gdacs", count: 0, error: "HTTP 503" });
-    expect(run.newItems).toBe(5);
+    expect(run.newItems).toBe(4);
   });
 
   it("texts about critical hazards like any other alert", async () => {

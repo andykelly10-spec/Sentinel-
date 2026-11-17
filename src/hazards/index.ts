@@ -56,13 +56,14 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
     { source: "usgs", run: () => wrap(quakeHazards(sites)) },
     { source: "wildfire", run: () => wrap(wildfireHazards(sites, now)) },
     { source: "gdacs", run: () => wrap(disasterHazards(sites, now)) },
-    { source: "aircraft", run: () => wrap(aircraftHazards(sites, now)) },
     { source: "faa_tfr", run: () => wrap(restrictionHazards(sites, now)) },
     { source: "dispatch", run: () => wrap(dispatchHazards(sites, now)) },
     { source: "air_raids", run: () => wrap(airRaidHazards(sites, now)) },
     ...(me ? [{ source: "nixle" as const, run: () => wrap(nixleHazards(me, now)) }] : []),
     ...(hourly
       ? [
+          // adsb.lol rate-limits Cloudflare when asked every 15 minutes.
+          { source: "aircraft" as const, run: () => wrap(aircraftHazards(sites, now)) },
           { source: "travel_advisory" as const, run: () => advisoryHazards(env.DB, sites, now) },
           { source: "domains" as const, run: () => domainHazards(env.DB) },
         ]
