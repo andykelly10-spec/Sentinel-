@@ -213,6 +213,13 @@ h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: 0.42em; line-
 }
 .alerts { top: calc(var(--top) + 6px); right: 10px; bottom: calc(var(--ticker) + 10px); width: var(--alerts); max-width: calc(100vw - 20px); }
 .alerts.hidden { display: none; }
+/* The Situation column scrolls as one: board, counts and alerts flow together,
+   with the header and the alert filters pinned while scrolling. */
+.alerts { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #2a3038 transparent; }
+.alerts > * { flex-shrink: 0; }
+.alerts > .panel-head { position: sticky; top: 0; z-index: 3; background: var(--panel-solid); border-radius: 10px 10px 0 0; }
+.alerts .filters { position: sticky; top: 49px; z-index: 2; background: var(--panel-solid); }
+.alerts .feed { flex: none; overflow: visible; min-height: 0; }
 .reopen { position: fixed; z-index: 500; right: 10px; top: calc(var(--top) + 6px); }
 .drawer { top: calc(var(--top) + 6px); left: calc(var(--rail) + 12px); bottom: calc(var(--ticker) + 70px); width: 420px; max-width: calc(100vw - var(--rail) - 16px); }
 .drawer[hidden] { display: none; }
@@ -232,7 +239,7 @@ h2 { margin: 0; font-size: 12px; font-weight: 500; color: var(--gold); letter-sp
 .ops-updated { margin-left: auto; letter-spacing: 0.06em; text-transform: none; }
 .ops-head .chev { transition: transform 0.2s; }
 .ops-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
-.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0 14px 12px; max-height: 46vh; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #2a3038 transparent; }
+.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0 14px 12px; }
 .ops-grid[hidden] { display: none; }
 .tile {
   --tone: var(--cyan);
