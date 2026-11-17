@@ -63,6 +63,17 @@ describe("ops board feeds", () => {
     ]);
     expect(brandBreaches(text)).toEqual([{ name: "HBO Fan Forum", domain: "hbo.com", added: "2026-11-10T00:00:00Z", count: 1234 }]);
   });
+
+  it("alerts only on breaches added in the last 30 days", async () => {
+    const { brandThreatHazards } = await import("../src/hazards/intelAlerts");
+    const catalogue = JSON.stringify([
+      { Name: "PlutoTV", Title: "Pluto TV", Domain: "pluto.tv", AddedDate: "2020-11-23T00:00:00Z", PwnCount: 3200000 },
+      { Name: "HBOFans", Title: "HBO Fan Forum", Domain: "hbo.com", AddedDate: "2026-11-10T00:00:00Z", PwnCount: 1234 },
+    ]);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => new Response(String(input).includes("haveibeenpwned") ? catalogue : String(input).includes("ransomware") ? "[]" : ""));
+    const items = await brandThreatHazards(NOW);
+    expect(items.map((item) => item.title)).toEqual(["Data breach listed for hbo.com: HBO Fan Forum"]);
+  });
 });
 
 describe("ops board alerts", () => {

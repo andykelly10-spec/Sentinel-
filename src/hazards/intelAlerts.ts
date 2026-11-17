@@ -12,6 +12,8 @@ import type { HazardCheck } from ".";
 import { hazardItem, HOUR_MS, miles, nearestSite } from "./common";
 
 export const BREACHES_URL = "https://haveibeenpwned.com/api/v3/breaches";
+// Only breaches added to the catalogue recently are news; older ones were known.
+const BREACH_NEWS_MS = 30 * 24 * HOUR_MS;
 
 // Breaches of the company's own domains. The catalogue is over a megabyte, so
 // it is searched as text for each domain rather than parsed whole.
@@ -81,7 +83,7 @@ export async function brandThreatHazards(now: Date): Promise<HazardItem[]> {
     }
   }
   if (breaches.status === "fulfilled") {
-    for (const breach of breaches.value) {
+    for (const breach of breaches.value.filter((each) => now.getTime() - Date.parse(each.added) <= BREACH_NEWS_MS)) {
       items.push(
         await hazardItem({
           key: `breach:${breach.domain}:${breach.added}`,
