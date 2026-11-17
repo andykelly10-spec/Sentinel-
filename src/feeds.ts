@@ -68,6 +68,15 @@ const FEEDS: Record<string, Feed> = {
     },
     maxAge: 900,
   },
+  // Large catalogues for the ops board, read by the browser rather than the worker.
+  kev: {
+    url: () => "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    maxAge: 3600,
+  },
+  breaches: {
+    url: () => "https://haveibeenpwned.com/api/v3/breaches",
+    maxAge: 3600,
+  },
   "cameras-511": {
     url: (params) => {
       const host = SYSTEMS_511[params.get("system") ?? ""];

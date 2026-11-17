@@ -380,6 +380,11 @@ function stubHazardFeeds(overrides: Record<string, (url: URL) => Response> = {})
       return new Response(query === "%hbomax%" ? CRT_HBOMAX : query === "%skydance%" ? CRT_SKYDANCE : "[]");
     }
     if (url.hostname === "vadimklimenko.com") return new Response('{"states":{}}');
+    if (url.hostname === "www.mi5.gov.uk") return new Response("<rss><channel><item><title>Current Threat Level: SEVERE</title></item></channel></rss>");
+    if (url.hostname === "www.nhc.noaa.gov") return new Response('{"activeStorms":[]}');
+    if (url.hostname === "api.ransomware.live") return new Response("[]");
+    if (url.hostname === "raw.githubusercontent.com") return new Response("");
+    if (url.hostname === "haveibeenpwned.com") return new Response("[]");
     if (url.hostname === "t.me") return new Response("<html></html>");
     if (url.hostname === "api.sendgrid.com" || url.hostname === "api.twilio.com") return new Response("{}", { status: 202 });
     throw new Error(`unexpected request to ${url.hostname}`);
@@ -413,8 +418,11 @@ describe("runHazards", () => {
       ["faa_tfr", 1, null],
       ["dispatch", 0, null],
       ["air_raids", 0, null],
+      ["threat_levels", 0, null],
+      ["nhc", 0, null],
       // Checked hourly only, to stay inside adsb.lol's rate limit.
       ["aircraft", 1, null],
+      ["brand_threats", 0, null],
       ["travel_advisory", 1, null],
       ["domains", 2, null],
     ]);

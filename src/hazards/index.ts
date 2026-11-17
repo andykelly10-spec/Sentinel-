@@ -4,6 +4,7 @@ import type { Env, HazardItem, Site, SourceName, SourceResult } from "../types";
 import { advisoryHazards } from "./advisories";
 import { aircraftHazards } from "./aircraft";
 import { airRaidHazards } from "./airRaids";
+import { brandThreatHazards, stormHazards, threatLevelHazards } from "./intelAlerts";
 import { activeLocation, withMyLocation } from "../me";
 import { disasterHazards } from "./disasters";
 import { dispatchHazards } from "./dispatch";
@@ -59,11 +60,14 @@ export async function runHazards(env: Env, now: Date = new Date(), hourly = fals
     { source: "faa_tfr", run: () => wrap(restrictionHazards(sites, now)) },
     { source: "dispatch", run: () => wrap(dispatchHazards(sites, now)) },
     { source: "air_raids", run: () => wrap(airRaidHazards(sites, now)) },
+    { source: "threat_levels", run: () => threatLevelHazards(env.DB, now) },
+    { source: "nhc", run: () => wrap(stormHazards(sites, now)) },
     ...(me ? [{ source: "nixle" as const, run: () => wrap(nixleHazards(me, now)) }] : []),
     ...(hourly
       ? [
           // adsb.lol rate-limits Cloudflare when asked every 15 minutes.
           { source: "aircraft" as const, run: () => wrap(aircraftHazards(sites, now)) },
+          { source: "brand_threats" as const, run: () => wrap(brandThreatHazards(now)) },
           { source: "travel_advisory" as const, run: () => advisoryHazards(env.DB, sites, now) },
           { source: "domains" as const, run: () => domainHazards(env.DB) },
         ]

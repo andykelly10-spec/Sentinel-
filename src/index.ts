@@ -30,6 +30,7 @@ import { latestHeadlines } from "./headlines";
 import { liveVideos } from "./live";
 import { windyWebcams } from "./webcams";
 import { scannerLinks } from "./scanner";
+import { cachedIntel } from "./intel";
 import { cachedAirRaidPicture } from "./hazards/airRaids";
 import { activeLocation, clearMyLocation, updateMyLocation, validUpdate } from "./me";
 import { runHazards, runOutages } from "./hazards";
@@ -92,6 +93,10 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
 
   if (request.method === "GET" && url.pathname === "/api/headlines") {
     return json(await latestHeadlines(env.DB));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/intel") {
+    return json(await cachedIntel(env.DB, await listSites(env.DB)));
   }
 
   if (request.method === "GET" && url.pathname === "/api/scanner") {

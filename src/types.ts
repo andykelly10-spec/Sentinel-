@@ -59,7 +59,10 @@ export type SourceName =
   | "dispatch"
   | "nixle"
   | "air_raids"
-  | "outages";
+  | "outages"
+  | "brand_threats"
+  | "threat_levels"
+  | "nhc";
 
 export interface RawItem {
   source: SourceName;

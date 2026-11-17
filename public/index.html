@@ -41,11 +41,18 @@
 
 <aside class="panel alerts" id="alerts-panel" aria-label="Alerts">
   <div class="panel-head">
-    <h2>Alerts</h2>
-    <button class="icon-btn" id="alerts-toggle" aria-label="Hide alerts panel">
+    <h2><span class="live-dot" aria-hidden="true"></span>Situation</h2>
+    <button class="icon-btn" id="alerts-toggle" aria-label="Hide situation panel">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
   </div>
+  <section class="ops" id="ops" aria-label="Ops board">
+    <button class="ops-head" id="ops-toggle" aria-expanded="true" aria-controls="ops-grid">
+      <span>Ops board</span><span class="ops-updated" id="ops-updated"></span><span class="chev" aria-hidden="true">▾</span>
+    </button>
+    <div class="ops-grid" id="ops-grid"></div>
+  </section>
+  <div class="section-head"><span>Alerts</span></div>
   <div class="counts" id="counts" aria-label="Open alerts by severity"></div>
   <figure class="activity">
     <figcaption><span>Alerts per hour · 24 h</span><span id="activity-total"></span></figcaption>
