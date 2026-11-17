@@ -270,6 +270,8 @@ export default {
     // (no-referrer would send "Origin: null" and fail the same-origin check).
     headers.set("Referrer-Policy", "same-origin");
     headers.set("X-Content-Type-Options", "nosniff");
+    // Browsers check for a newer copy on every load, so updates show up at once.
+    headers.set("Cache-Control", "no-cache");
     return new Response(asset.body, { status: asset.status, headers });
   },
 

@@ -2203,21 +2203,52 @@ document.getElementById("status").addEventListener("change", (event) => {
   refresh();
 });
 
+// A short-lived report box under the top bar.
+function showToast(title, lines, tone = "") {
+  const toast = document.getElementById("toast");
+  clearTimeout(toast.timer);
+  toast.className = `toast ${tone}`;
+  toast.replaceChildren(
+    el("div", { class: "toast-head" }, el("strong", {}, title), el("button", { class: "icon-btn", "aria-label": "Close", onclick: () => (toast.hidden = true) }, "×")),
+    ...lines.map((line) => el("p", {}, line)),
+  );
+  toast.hidden = false;
+  toast.timer = setTimeout(() => (toast.hidden = true), tone === "error" ? 30000 : 15000);
+}
+
+// Plain-language summary of one run, for the Check now report.
+function runSummary(label, run, noun) {
+  const failing = (run.sources ?? []).filter((source) => source.error);
+  const parts = [`${label}: ${run.fetched} ${noun} scanned, ${run.newItems} new`];
+  if (typeof run.alerts === "number" && label === "News") parts.push(`${run.alerts} new alert${run.alerts === 1 ? "" : "s"}`);
+  let text = parts.join(", ") + ".";
+  if (failing.length) text += ` Not answering: ${failing.map((source) => SOURCE_NAMES[source.source] ?? source.source).join(", ")}.`;
+  const problems = (run.errors ?? []).filter((error) => !/deferred to the next run/.test(error));
+  if (problems.length) text += ` Problems: ${problems.join("; ")}.`;
+  return text;
+}
+
 document.getElementById("run-now").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
   button.textContent = "Checking…";
+  const started = Date.now();
+  showToast("Checking now…", ["Reading news, social media and hazard feeds, then having Claude review anything new. This can take a minute."]);
   try {
     // Separate requests, so each stays inside Cloudflare's per-request limits.
-    const results = await Promise.allSettled([api("/api/run", { method: "POST" }), api("/api/hazards/run", { method: "POST" })]);
+    const [news, hazards] = await Promise.allSettled([api("/api/run", { method: "POST" }), api("/api/hazards/run", { method: "POST" })]);
     await refresh();
-    for (const [index, result] of results.entries()) {
-      if (result.status === "rejected") {
-        document.getElementById("feed").prepend(el("div", { class: "empty error" }, `${index === 0 ? "News" : "Hazard"} check failed. ${result.reason.message}`));
-      }
-    }
+    const seconds = Math.round((Date.now() - started) / 1000);
+    const lines = [
+      news.status === "fulfilled" ? runSummary("News", news.value.run, "stories") : `News check failed: ${news.reason.message}`,
+      hazards.status === "fulfilled" ? runSummary("Hazards", hazards.value.run, "reports") : `Hazard check failed: ${hazards.reason.message}`,
+    ];
+    const failed = news.status === "rejected" || hazards.status === "rejected";
+    const found = [news, hazards].some((result) => result.status === "fulfilled" && result.value.run.newItems > 0);
+    if (!failed && !found) lines.push("Nothing new since the last check; the scheduled checks run every 15 minutes.");
+    showToast(failed ? `Check finished with problems (${seconds} s)` : `Check complete (${seconds} s)`, lines, failed ? "error" : "ok");
   } catch (error) {
-    document.getElementById("feed").prepend(el("div", { class: "empty error" }, `Check failed. ${error.message}`));
+    showToast("Check failed", [error.message], "error");
   } finally {
     button.disabled = false;
     button.textContent = "Check now";
