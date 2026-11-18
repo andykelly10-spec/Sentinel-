@@ -881,6 +881,18 @@ function locate(group) {
   group.marker?.openPopup();
 }
 
+// Alerts with no expiry of their own close 72 hours after the incident's last
+// report (see closeStaleIncidents on the server); a card says so once it has
+// been quiet for a day.
+const STALE_CLOSE_HOURS = 72;
+function quietNote(group) {
+  if (group.status !== "new" || group.reports.some((report) => report.expiresAt)) return null;
+  const quietHours = (Date.now() - Date.parse(group.latest)) / 3_600_000;
+  if (quietHours < 24) return null;
+  const left = Math.max(1, Math.round(STALE_CLOSE_HOURS - quietHours));
+  return el("p", { class: "quiet-note" }, `No new reports for ${Math.floor(quietHours / 24)} day${quietHours >= 48 ? "s" : ""}. Closes automatically in about ${left} h unless there is news.`);
+}
+
 function renderCard(group) {
   const link = safeUrl(group.lead.url);
   const title = !group.incident && link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer" }, group.name) : group.name;
@@ -901,6 +913,7 @@ function renderCard(group) {
     el("h3", {}, title),
     el("p", {}, group.summary),
     near ? el("span", { class: "chip" }, near) : null,
+    quietNote(group),
     el("div", { class: "meta" }, group.incident ? `${reports} report${reports === 1 ? "" : "s"} · latest ${ago(group.latest)}` : `${origin} · ${ago(group.lead.publishedAt ?? group.lead.firstSeenAt)}`),
     group.incident
       ? el(

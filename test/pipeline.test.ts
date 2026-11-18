@@ -353,3 +353,40 @@ describe("dashboard API", () => {
     expect((await worker.fetch(new Request("https://sentinel.example/api/feeds/quakes"), env)).status).toBe(401);
   });
 });
+
+describe("closing quiet incidents", () => {
+  it("closes alerts whose incident has had no report for 72 hours, and keeps active incidents open", async () => {
+    const { closeStaleIncidents, listAlerts } = await import("../src/db");
+    const { createTestDb } = await import("./helpers");
+    const db = createTestDb();
+    const insert = (id: string, incident: string, hoursAgo: number, expires: string | null = null, status = "new", category = "physical") =>
+      db
+        .prepare(
+          "INSERT INTO items (id, source, url, title, first_seen_at, category, severity, summary, status, incident, expires_at) VALUES (?, 'bing_news', 'https://example.com', ?, ?, ?, 'critical', '', ?, ?, ?)",
+        )
+        .bind(id, id, new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(), category, status, incident, expires)
+        .run();
+    await insert("old-quiet-1", "Logan Circle gym shooting", 100);
+    await insert("old-quiet-2", "Logan Circle gym shooting", 80);
+    await insert("old-active", "Krakow Old Town shooting", 90);
+    await insert("new-report", "Krakow Old Town shooting", 5);
+    await insert("loner-old", "", 75);
+    await insert("loner-new", "", 10);
+    await insert("hazard-with-expiry", "Storm", 100, new Date(NOW.getTime() + 3_600_000).toISOString());
+    await insert("already-dismissed", "Old", 200, null, "dismissed");
+    await insert("not-an-alert", "", 200, null, "new", "none");
+
+    expect(await closeStaleIncidents(db, NOW)).toBe(3);
+    const statuses = Object.fromEntries((await listAlerts(db, { limit: 50 })).map((alert) => [alert.id, alert.status]));
+    expect(statuses).toMatchObject({
+      "old-quiet-1": "expired",
+      "old-quiet-2": "expired",
+      "old-active": "new",
+      "new-report": "new",
+      "loner-old": "expired",
+      "loner-new": "new",
+      "hazard-with-expiry": "new",
+      "already-dismissed": "dismissed",
+    });
+  });
+});

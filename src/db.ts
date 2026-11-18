@@ -400,6 +400,27 @@ export async function expireAlerts(db: D1Database, now: string): Promise<number>
   return result.meta.changes;
 }
 
+// Alerts with no expiry of their own (news incidents, lookalike domains,
+// ransomware claims and the like) close once their incident has had no new
+// report for STALE_INCIDENT_MS. A later report about the same incident keeps
+// all of its reports open.
+export const STALE_INCIDENT_MS = 72 * 3_600_000;
+
+export async function closeStaleIncidents(db: D1Database, now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - STALE_INCIDENT_MS).toISOString();
+  const result = await db
+    .prepare(
+      `UPDATE items SET status = 'expired'
+       WHERE status IN ('new', 'acknowledged') AND expires_at IS NULL AND category != 'none' AND first_seen_at < ?1
+         AND (incident = '' OR NOT EXISTS (
+           SELECT 1 FROM items AS newer WHERE newer.incident = items.incident AND newer.first_seen_at >= ?1
+         ))`,
+    )
+    .bind(cutoff)
+    .run();
+  return result.meta.changes;
+}
+
 export interface BriefInput {
   incident: string;
   title: string;

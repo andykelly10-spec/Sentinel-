@@ -1,4 +1,4 @@
-import { expireAlerts, extendExpiry, findExistingIds, insertItems, listSites, recordRun, saveSiteZones, type RunKind, type RunRecord } from "../db";
+import { closeStaleIncidents, expireAlerts, extendExpiry, findExistingIds, insertItems, listSites, recordRun, saveSiteZones, type RunKind, type RunRecord } from "../db";
 import { notify } from "../notify";
 import type { Env, HazardItem, Site, SourceName, SourceResult } from "../types";
 import { advisoryHazards } from "./advisories";
@@ -110,6 +110,7 @@ async function storeChecks(env: Env, now: Date, kind: RunKind, checks: Check[], 
     }
   }
   await expireAlerts(env.DB, now.toISOString());
+  await closeStaleIncidents(env.DB, now);
   errors.push(...(await notify(env, now)));
 
   const run: RunRecord = {
