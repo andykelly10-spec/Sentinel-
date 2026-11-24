@@ -1,3 +1,4 @@
+import { avoidResponse, crimeResponse, MAX_BOX_DEGREES, parseBox, precogAssessment, routesResponse } from "./precog";
 import {
   basicMatches,
   clearedCookie,
@@ -126,6 +127,17 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
     return json(await cachedAirRaidPicture(env.DB));
   }
 
+  // Sentinel Pre-Cog: routes, recorded crime along them and a written assessment.
+  if (request.method === "GET" && url.pathname === "/api/precog/crime") {
+    const box = parseBox(url.searchParams.get("box"));
+    if (!box) return json({ error: `box must be south,west,north,east and at most ${MAX_BOX_DEGREES} degrees across` }, 400);
+    return crimeResponse(box, new Date());
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/precog/routes") {
+    return routesResponse(url.searchParams);
+  }
+
   if (request.method === "GET" && url.pathname === "/api/brief") {
     return json({ brief: await latestBrief(env.DB) });
   }
@@ -146,6 +158,19 @@ async function handleApi(request: Request, env: Env, url: URL, ctx?: ExecutionCo
       // After a move, check the new area straight away rather than at the next scheduled run.
       if (moved && ctx) ctx.waitUntil(runHazards(env, now).catch((error) => console.error("Near-you check failed:", error)));
       return json({ location, checking: moved });
+    }
+
+    if (url.pathname === "/api/precog/avoid") {
+      return avoidResponse(await request.json().catch(() => null));
+    }
+
+    if (url.pathname === "/api/precog/assess") {
+      try {
+        return json({ assessment: await precogAssessment(env, await request.json().catch(() => null)) });
+      } catch (error) {
+        console.error("Pre-Cog assessment failed:", error);
+        return json({ error: "The written assessment is not available right now; the figures above still apply." }, 502);
+      }
     }
 
     if (url.pathname === "/api/me/off") {

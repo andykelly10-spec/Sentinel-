@@ -1,4 +1,5 @@
 import { correlate, distanceMiles, feedsForSites, nearestCameras } from "/cameras.js";
+import { analyseRoute, assessmentInput, avoidZones, compareRoutes, directionsLink, indexCrimes, LEVELS, localTime, readCrime, readOsrm, readValhalla, reasons } from "/precog.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const SEVERITY_COLORS = { critical: "#ff5252", high: "#ff8d5c", medium: "#fab219", low: "#8a93a0" };
@@ -813,6 +814,7 @@ function renderRail() {
       ),
     ),
     el("div", { class: "spacer" }),
+    railButton("Sentinel Pre-Cog: predict the safest route", "M4 19c3-1 4-5 8-5s5 3 8 1M12 3a5 5 0 015 5c0 2.8-5 6-5 6s-5-3.2-5-6a5 5 0 015-5zM12 6.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3z", { id: "open-precog", onclick: openPrecog }),
     railButton("News: live TV and headlines", "M3 7h18v12H3zM8 3l4 4 4-4M7 11h6M7 15h4", { id: "open-news", onclick: () => openNewsroom() }),
     railButton("Morning brief", "M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6", { id: "open-brief", onclick: openBrief }),
     railButton("Sites: view and import your site list", "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01", { id: "open-sites", onclick: openSites }),
@@ -2791,3 +2793,467 @@ renderOps();
 refresh();
 setInterval(refresh, 60000);
 setInterval(renderReadouts, 1000);
+
+// ---------- Sentinel Pre-Cog ----------
+
+const PRECOG_TITLE = "Sentinel Pre-Cog";
+const ROUTE_LETTERS = "ABCDE";
+const precog = {
+  from: saved.get("precog.from", null),
+  to: saved.get("precog.to", null),
+  mode: saved.get("precog.mode", "walk"),
+  when: "now",
+  dayType: "weekday",
+  busy: false,
+  status: "",
+  error: "",
+  data: null,
+  routes: [],
+  selected: 0,
+  assessment: null,
+  assessing: false,
+  showIncidents: true,
+  layer: L.layerGroup(),
+  picking: null,
+  assessTimer: 0,
+};
+
+const precogOpen = () => !document.getElementById("drawer").hidden && document.getElementById("drawer-title").textContent === PRECOG_TITLE;
+
+function openPrecog() {
+  openDrawer(PRECOG_TITLE, precogPanel());
+}
+
+function renderPrecog() {
+  if (precogOpen()) {
+    const body = document.getElementById("drawer-body");
+    const top = body.scrollTop;
+    body.replaceChildren(precogPanel());
+    body.scrollTop = top;
+  }
+}
+
+// The hour and kind of day the prediction is for, in the route's own time zone.
+function precogTime() {
+  if (precog.when !== "now") return { hour: Number(precog.when), weekend: precog.dayType === "weekend", now: false };
+  const tz = precog.data?.sources?.find((source) => source.tz)?.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return { ...localTime(Date.now(), tz), now: true };
+}
+
+const hourText = (hour) => `${String(hour).padStart(2, "0")}:00`;
+const levelChip = (level, score) => el("span", { class: "pc-level", style: `--level:${level.color}` }, `${level.label} · ${Math.round(score)}`);
+
+function endpointRow(which) {
+  const point = precog[which];
+  const input = el("input", { type: "text", id: `precog-${which}`, value: point?.label ?? "", placeholder: which === "from" ? "Start: address, place or site" : "Destination: address, place or site", "aria-label": which === "from" ? "Start" : "Destination", autocomplete: "off" });
+  input.addEventListener("input", () => {
+    if (input.value.trim() !== (precog[which]?.label ?? "")) precog[which] = input.value.trim() ? { label: input.value.trim() } : null;
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      planPrecog();
+    }
+  });
+  return el(
+    "div",
+    { class: "pc-endpoint" },
+    el("span", { class: `pc-pin ${which}` }, which === "from" ? "A" : "B"),
+    input,
+    el("button", { class: "pill small", type: "button", title: "Use my location", "aria-label": `${which === "from" ? "Start" : "Destination"}: my location`, onclick: () => useMyLocation(which) }, "Me"),
+    el("button", { class: "pill small", type: "button", title: "Pick on the map", "aria-pressed": String(precog.picking === which), "aria-label": `${which === "from" ? "Start" : "Destination"}: pick on the map`, onclick: () => pickOnMap(which) }, "Map"),
+  );
+}
+
+function precogPanel() {
+  const time = precogTime();
+  const whenSelect = el(
+    "select",
+    { "aria-label": "Time of travel", onchange: (event) => setPrecogTime(event.target.value, precog.dayType) },
+    el("option", { value: "now", selected: precog.when === "now" }, "Leaving now"),
+    ...Array.from({ length: 24 }, (_, hour) => el("option", { value: String(hour), selected: precog.when === String(hour) }, `At ${hourText(hour)}`)),
+  );
+  const daySelect = el(
+    "select",
+    { "aria-label": "Day", disabled: precog.when === "now", onchange: (event) => setPrecogTime(precog.when, event.target.value) },
+    el("option", { value: "weekday", selected: precog.dayType === "weekday" }, "on a weekday"),
+    el("option", { value: "weekend", selected: precog.dayType === "weekend" }, "at the weekend"),
+  );
+  const modeButton = (mode, label) =>
+    el("button", { type: "button", "aria-pressed": String(precog.mode === mode), onclick: () => { precog.mode = mode; saved.set("precog.mode", mode); renderPrecog(); } }, label);
+
+  return el(
+    "div",
+    { class: "precog" },
+    el("p", { class: "pc-intro" }, "Predicts how risky each route is at the time you travel, from where and when crime has been recorded along it, and finds a detour around hotspots."),
+    el("div", { class: "pc-endpoints" }, endpointRow("from"), endpointRow("to"), el("button", { class: "icon-btn pc-swap", type: "button", "aria-label": "Swap start and destination", title: "Swap", onclick: swapPrecog }, "⇅")),
+    el("div", { class: "pc-options" }, el("div", { class: "tabs", role: "group", "aria-label": "Travel mode" }, modeButton("walk", "Walk"), modeButton("drive", "Drive")), whenSelect, daySelect),
+    el("button", { class: "pill gold pc-go", type: "button", disabled: precog.busy, onclick: planPrecog }, precog.busy ? "Predicting…" : "Predict the safest route"),
+    precog.status ? el("p", { class: "pc-status", role: "status" }, el("span", { class: "spinner", "aria-hidden": "true" }), precog.status) : null,
+    precog.error ? el("div", { class: "result error" }, precog.error) : null,
+    precog.routes.length ? precogResults(time) : null,
+  );
+}
+
+function precogResults(time) {
+  const route = precog.routes[precog.selected] ?? precog.routes[0];
+  const max = Math.max(1, ...precog.routes.flatMap((each) => each.byHour));
+  const noCrime = !precog.data?.crimes?.length;
+  return el(
+    "div",
+    { class: "pc-results" },
+    el("h3", {}, `${precog.routes.length} route${precog.routes.length === 1 ? "" : "s"} · ${time.now ? "leaving now" : "at"} ${hourText(time.hour)}${time.now ? "" : time.weekend ? " at the weekend" : " on a weekday"}`),
+    noCrime ? el("div", { class: "result" }, precog.data?.note ?? "No crime records cover this area, so routes are compared on live Sentinel alerts only.") : null,
+    ...precog.routes.map((each, index) => routeCard(each, index, max, time)),
+    precogAssessmentBox(),
+    route.hotspots.length
+      ? el(
+          "section",
+          {},
+          el("h3", {}, `Hotspots on route ${route.letter}`),
+          el(
+            "ul",
+            { class: "pc-hotspots" },
+            ...route.hotspots.map((spot) =>
+              el(
+                "li",
+                {},
+                el(
+                  "button",
+                  { type: "button", onclick: () => map.flyTo([spot.lat, spot.lon], 17, { duration: 0.8 }) },
+                  el("strong", {}, spot.place || `Near ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`),
+                  el("span", {}, `≈${Math.round(spot.perMonth)} incidents/month${spot.violentPerMonth >= 0.5 ? `, ${Math.round(spot.violentPerMonth)} violent` : ""} · ${spot.types.map(([type]) => type.toLowerCase()).join(", ")}${spot.peak ? ` · peaks ${spot.peak}` : ""}`),
+                ),
+              ),
+            ),
+          ),
+        )
+      : null,
+    el(
+      "label",
+      { class: "pc-toggle" },
+      el("input", { type: "checkbox", checked: precog.showIncidents, onchange: (event) => { precog.showIncidents = event.target.checked; drawPrecog(false); } }),
+      ` Show recorded incidents along route ${route.letter} (red: violent)`,
+    ),
+    precogSources(),
+  );
+}
+
+function routeCard(route, index, max, time) {
+  const selected = index === precog.selected;
+  const bars = el(
+    "div",
+    { class: "pc-hours", "aria-label": `Predicted risk by hour for route ${route.letter}` },
+    ...route.byHour.map((value, hour) =>
+      el("span", { class: hour === time.hour ? "now" : "", style: `height:${Math.max(4, (100 * value) / max)}%;--level:${levelColor(value)}`, title: `${hourText(hour)} · ${Math.round(value)} (${levelName(value)})` }),
+    ),
+  );
+  return el(
+    "article",
+    { class: `pc-route${selected ? " selected" : ""}`, style: `--level:${route.level.color}`, onclick: (event) => { if (!event.target.closest("a")) selectRoute(index); } },
+    el(
+      "header",
+      {},
+      el("strong", {}, `Route ${route.letter}`),
+      ...route.tags.map((tag) => el("span", { class: `pc-tag${tag === "Recommended" ? " rec" : ""}` }, tag)),
+      levelChip(route.level, route.score),
+    ),
+    el(
+      "div",
+      { class: "pc-meta" },
+      `${Math.max(1, Math.round(route.durationS / 60))} min · ${(route.distanceM / 1000).toFixed(1)} km${route.extraMinutes > 0 ? ` · +${route.extraMinutes} min` : ""}${route.peak ? ` · crime peaks ${route.peak}` : ""}`,
+    ),
+    bars,
+    el("div", { class: "pc-axis", "aria-hidden": "true" }, el("span", {}, "00"), el("span", {}, "06"), el("span", {}, "12"), el("span", {}, "18"), el("span", {}, "24")),
+    selected ? el("ul", { class: "pc-reasons" }, ...reasons(route, time.hour).map((line) => el("li", {}, line))) : null,
+    selected ? el("a", { class: "pc-link", href: directionsLink(route, precog.mode), target: "_blank", rel: "noopener" }, "Open this route in Google Maps ↗") : null,
+  );
+}
+
+const levelColor = (score) => LEVELS.find((level) => score < level.below).color;
+const levelName = (score) => LEVELS.find((level) => score < level.below).label;
+
+function precogAssessmentBox() {
+  const a = precog.assessment;
+  if (precog.assessing && !a) return el("section", { class: "pc-brief" }, el("h3", {}, "Pre-Cog assessment"), el("p", { class: "pc-status" }, el("span", { class: "spinner", "aria-hidden": "true" }), "Reasoning over the figures…"));
+  if (!a) return null;
+  if (a.error) return el("section", { class: "pc-brief" }, el("h3", {}, "Pre-Cog assessment"), el("p", { class: "muted" }, a.error));
+  return el(
+    "section",
+    { class: "pc-brief" },
+    el("h3", {}, "Pre-Cog assessment", el("span", { class: `pc-confidence ${a.confidence}` }, `${a.confidence} confidence`)),
+    el("p", { class: "pc-verdict" }, a.verdict),
+    el("p", {}, el("strong", {}, "Best time: "), a.bestTime),
+    a.reasoning.length ? el("ul", {}, ...a.reasoning.map((line) => el("li", {}, line))) : null,
+    a.precautions.length ? el("div", {}, el("strong", {}, "Precautions"), el("ul", {}, ...a.precautions.map((line) => el("li", {}, line)))) : null,
+    el("p", { class: "muted small" }, a.confidenceNote),
+  );
+}
+
+function precogSources() {
+  const sources = precog.data?.sources ?? [];
+  const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return el(
+    "section",
+    { class: "pc-sources" },
+    el("h3", {}, "Data behind the prediction"),
+    ...sources.map((source) =>
+      el(
+        "p",
+        {},
+        el("strong", {}, source.name),
+        source.error ? ` — unavailable (${source.error})` : ` — ${source.count.toLocaleString()} incidents${source.from ? `, ${day(source.from)} to ${day(source.to)}` : ""}; ${source.lag}.`,
+      ),
+    ),
+    el(
+      "p",
+      { class: "muted small" },
+      "Pre-Cog counts incidents recorded within " +
+        `${precog.mode === "walk" ? 80 : 50} m of each route, weights violent crime three times, and predicts the risk for your hour and day from when they happened, as a 30-day rate per km. ` +
+        "Open Sentinel alerts within 300 m add to it. Police records lag and only cover reported crime, so treat this as advice, not a guarantee. Fraud, shoplifting and paperwork offences are left out.",
+    ),
+  );
+}
+
+// ----- choosing the ends -----
+
+function useMyLocation(which) {
+  const set = (lat, lon) => {
+    precog[which] = { lat, lon, label: "My location" };
+    saved.set(`precog.${which}`, precog[which]);
+    renderPrecog();
+  };
+  if (near.here) return set(near.here.lat, near.here.lon);
+  if (!navigator.geolocation) return showToast("Location unavailable", ["This browser cannot share its location."], "error");
+  navigator.geolocation.getCurrentPosition(
+    (position) => set(Math.round(position.coords.latitude * 1e5) / 1e5, Math.round(position.coords.longitude * 1e5) / 1e5),
+    () => showToast("Location unavailable", ["Allow location access for this site, or pick the point on the map."], "error"),
+    { enableHighAccuracy: true, timeout: 15000 },
+  );
+}
+
+function pickOnMap(which) {
+  precog.picking = precog.picking === which ? null : which;
+  document.getElementById("map").classList.toggle("picking", Boolean(precog.picking));
+  if (precog.picking) showToast("Pick a point", [`Click the map to set the ${which === "from" ? "start" : "destination"}. Press Esc to cancel.`]);
+  renderPrecog();
+}
+
+map.on("click", (event) => {
+  if (!precog.picking) return;
+  const which = precog.picking;
+  const { lat, lng } = event.latlng;
+  precog[which] = { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lng * 1e5) / 1e5, label: `Map point ${lat.toFixed(4)}, ${lng.toFixed(4)}` };
+  saved.set(`precog.${which}`, precog[which]);
+  precog.picking = null;
+  document.getElementById("map").classList.remove("picking");
+  document.getElementById("toast").hidden = true;
+  drawEnds();
+  renderPrecog();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && precog.picking) {
+    precog.picking = null;
+    document.getElementById("map").classList.remove("picking");
+    renderPrecog();
+  }
+});
+
+function swapPrecog() {
+  [precog.from, precog.to] = [precog.to, precog.from];
+  saved.set("precog.from", precog.from);
+  saved.set("precog.to", precog.to);
+  renderPrecog();
+}
+
+// A typed place: a site by name, coordinates, or the first OpenStreetMap match.
+async function resolveEnd(which) {
+  const point = precog[which];
+  if (!point?.label) throw new Error(`Enter a ${which === "from" ? "start" : "destination"}.`);
+  if (Number.isFinite(point.lat) && Number.isFinite(point.lon)) return point;
+  const [coords] = coordinateResult(point.label);
+  const [site] = siteResults(point.label);
+  let found = coords ?? site;
+  if (!found) {
+    const [place] = await api(`/api/feeds/geocode?q=${encodeURIComponent(point.label)}`);
+    if (!place) throw new Error(`Could not find "${point.label}".`);
+    found = { lat: Number(place.lat), lon: Number(place.lon), label: place.display_name.split(",").slice(0, 2).join(",") };
+  }
+  precog[which] = { lat: found.lat, lon: found.lon, label: point.label };
+  saved.set(`precog.${which}`, precog[which]);
+  return precog[which];
+}
+
+// ----- predicting -----
+
+const liveAlerts = () => state.groups.filter((group) => group.lat !== null && (group.status === "new" || group.status === "acknowledged")).map((group) => ({ lat: group.lat, lon: group.lon, severity: group.severity, title: group.name }));
+
+function scoreRoutes(raw) {
+  const time = precogTime();
+  const index = precog.data?.index ?? indexCrimes([]);
+  const analysed = raw.map((route) => analyseRoute(route, { index, mode: precog.mode, hour: time.hour, weekend: time.weekend, alerts: liveAlerts() }));
+  return compareRoutes(analysed, precog.mode);
+}
+
+function precogStatus(text) {
+  precog.status = text;
+  renderPrecog();
+}
+
+async function planPrecog() {
+  if (precog.busy) return;
+  for (const which of ["from", "to"]) {
+    const input = document.getElementById(`precog-${which}`);
+    if (input && input.value.trim() !== (precog[which]?.label ?? "")) precog[which] = input.value.trim() ? { label: input.value.trim() } : null;
+  }
+  Object.assign(precog, { busy: true, error: "", routes: [], assessment: null, data: null, selected: 0 });
+  try {
+    precogStatus("Finding the places…");
+    const [from, to] = [await resolveEnd("from"), await resolveEnd("to")];
+    drawEnds();
+    precogStatus("Finding routes…");
+    const query = new URLSearchParams({ from: `${from.lat},${from.lon}`, to: `${to.lat},${to.lon}`, mode: precog.mode });
+    const raw = readOsrm(await api(`/api/precog/routes?${query}`));
+    if (!raw.length) throw new Error("No route was found between those places.");
+    raw.forEach((route, index) => (route.letter = ROUTE_LETTERS[index]));
+
+    const lats = raw.flatMap((route) => route.coords.map(([lat]) => lat));
+    const lons = raw.flatMap((route) => route.coords.map(([, lon]) => lon));
+    const pad = 0.004;
+    const box = [Math.min(...lats) - pad, Math.min(...lons) - pad, Math.max(...lats) + pad, Math.max(...lons) + pad];
+    if (box[2] - box[0] <= 0.35 && box[3] - box[1] <= 0.35) {
+      precogStatus("Reading months of police records along the way…");
+      const crime = readCrime(await api(`/api/precog/crime?box=${box.map((value) => value.toFixed(4)).join(",")}`));
+      precog.data = { ...crime, index: indexCrimes(crime.crimes), note: crime.sources.length ? null : "No police open-data source covers this area yet (Pre-Cog reads Chicago, DC, Los Angeles, New York, Philadelphia, San Francisco, Seattle, and England, Wales and Northern Ireland). Routes are compared on live Sentinel alerts only." };
+    } else {
+      precog.data = { crimes: [], sources: [], index: indexCrimes([]), note: "This trip is longer than a city, so it is compared on live Sentinel alerts only, not crime records." };
+    }
+
+    precogStatus("Predicting risk by hour…");
+    let routes = scoreRoutes(raw);
+    const zones = avoidZones(routes, from, to);
+    if (zones.length && Math.min(...routes.map((route) => route.score)) >= LEVELS[0].below) {
+      precogStatus("Looking for a detour around the hotspots…");
+      try {
+        const [detour] = readValhalla(await api("/api/precog/avoid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ from, to, mode: precog.mode, zones }) }));
+        if (detour && raw.every((route) => Math.abs(route.distanceM - detour.distanceM) > 40)) {
+          detour.letter = ROUTE_LETTERS[raw.length];
+          raw.push(detour);
+          routes = scoreRoutes(raw);
+        }
+      } catch {
+        // The detour is a bonus; the routes found already stand.
+      }
+    }
+    precog.raw = raw;
+    precog.routes = routes;
+    precog.selected = 0;
+    precog.status = "";
+    drawPrecog(true);
+    requestAssessment(0);
+  } catch (error) {
+    precog.error = error.message;
+    precog.status = "";
+  } finally {
+    precog.busy = false;
+    renderPrecog();
+  }
+}
+
+function setPrecogTime(when, dayType) {
+  precog.when = when;
+  precog.dayType = dayType;
+  if (precog.raw) {
+    const letter = precog.routes[precog.selected]?.letter;
+    precog.routes = scoreRoutes(precog.raw);
+    precog.selected = Math.max(0, precog.routes.findIndex((route) => route.letter === letter));
+    drawPrecog(false);
+    requestAssessment(1200);
+  }
+  renderPrecog();
+}
+
+function requestAssessment(delay) {
+  clearTimeout(precog.assessTimer);
+  precog.assessment = null;
+  precog.assessing = true;
+  const routes = precog.routes;
+  precog.assessTimer = setTimeout(async () => {
+    const time = precogTime();
+    const input = assessmentInput({ routes: routes.map((route) => ({ ...route, label: `Route ${route.letter}` })), mode: precog.mode, hour: time.hour, weekend: time.weekend, sources: precog.data?.sources ?? [], from: precog.from, to: precog.to });
+    try {
+      const { assessment } = await api("/api/precog/assess", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+      if (precog.routes === routes) precog.assessment = assessment;
+    } catch (error) {
+      if (precog.routes === routes) precog.assessment = { error: error.message };
+    } finally {
+      if (precog.routes === routes) precog.assessing = false;
+      renderPrecog();
+    }
+  }, delay);
+}
+
+function selectRoute(index) {
+  precog.selected = index;
+  drawPrecog(false);
+  renderPrecog();
+}
+
+// ----- drawing -----
+
+function drawEnds() {
+  precog.layer.eachLayer((layer) => layer.options.precogEnd && precog.layer.removeLayer(layer));
+  for (const which of ["from", "to"]) {
+    const point = precog[which];
+    if (!Number.isFinite(point?.lat)) continue;
+    L.circleMarker([point.lat, point.lon], { precogEnd: true, radius: 8, color: "#fff", weight: 2, fillColor: which === "from" ? "#1fd67a" : "#ff5252", fillOpacity: 1 })
+      .bindTooltip(which === "from" ? "A" : "B", { permanent: true, direction: "center", className: "pc-end-tip" })
+      .addTo(precog.layer);
+  }
+  if (!map.hasLayer(precog.layer)) precog.layer.addTo(map);
+}
+
+function drawPrecog(fit) {
+  precog.layer.clearLayers();
+  const selected = precog.routes[precog.selected];
+  // Unselected routes underneath, dimmed; the chosen one on top.
+  for (const route of [...precog.routes].sort((a, b) => (a === selected) - (b === selected))) {
+    const chosen = route === selected;
+    if (chosen) L.polyline(route.coords, { color: "#000", weight: 10, opacity: 0.5, interactive: false }).addTo(precog.layer);
+    L.polyline(route.coords, { color: route.level.color, weight: chosen ? 6 : 4, opacity: chosen ? 1 : 0.45, dashArray: chosen ? null : "6 8" })
+      .bindTooltip(`Route ${route.letter} · ${route.level.label} · ${Math.round(route.durationS / 60)} min`, { sticky: true })
+      .on("click", () => selectRoute(precog.routes.indexOf(route)))
+      .addTo(precog.layer);
+  }
+  if (selected && precog.showIncidents) {
+    for (const each of selected.crimes.slice(0, 3000)) {
+      L.circleMarker([each.lat, each.lon], { radius: each.violent ? 3 : 2, stroke: false, fillColor: each.violent ? "#ff5252" : "#fab219", fillOpacity: each.violent ? 0.85 : 0.55 })
+        .bindTooltip(`${each.type}${each.place ? ` · ${each.place}` : ""} · ${new Date(each.date).toISOString().slice(0, 10)}${each.hour !== null ? ` ${hourText(each.hour)}` : ""}`)
+        .addTo(precog.layer);
+    }
+  }
+  for (const spot of selected?.hotspots ?? []) {
+    L.circle([spot.lat, spot.lon], { radius: 110, color: "#ff5252", weight: 1.5, fillColor: "#ff5252", fillOpacity: 0.12, dashArray: "3 4" })
+      .bindPopup(
+        el(
+          "div",
+          { class: "popup" },
+          el("strong", {}, `Hotspot${spot.place ? `: ${spot.place}` : ""}`),
+          el("p", {}, `About ${Math.round(spot.perMonth)} recorded incidents a month${spot.violentPerMonth >= 0.5 ? `, ${Math.round(spot.violentPerMonth)} violent` : ""}.`),
+          el("p", { class: "muted" }, `${spot.types.map(([type, count]) => `${type} (${count})`).join(", ")}${spot.peak ? ` · peaks ${spot.peak}` : ""}`),
+        ),
+        LOCATION_POPUP,
+      )
+      .addTo(precog.layer);
+  }
+  drawEnds();
+  if (fit && precog.routes.length) {
+    const bounds = L.latLngBounds(precog.routes.flatMap((route) => route.coords));
+    const drawer = document.getElementById("drawer");
+    const alerts = document.getElementById("alerts-panel");
+    const left = drawer.hidden || window.innerWidth < 700 ? 60 : drawer.getBoundingClientRect().right + 20;
+    const right = alerts.hidden || window.innerWidth < 700 ? 40 : window.innerWidth - alerts.getBoundingClientRect().left + 20;
+    map.flyToBounds(bounds, { paddingTopLeft: [left, 90], paddingBottomRight: [right, 90], maxZoom: 17, duration: 0.8 });
+  }
+}

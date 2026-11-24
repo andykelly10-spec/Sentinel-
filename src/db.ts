@@ -254,7 +254,8 @@ const RUN_RETENTION_MS = 7 * 86_400_000;
 const NON_ALERT_RETENTION_MS = 14 * 86_400_000;
 
 export async function recordRun(db: D1Database, run: RunRecord): Promise<void> {
-  const finished = Date.parse(run.finishedAt);
+  // Retention counts from the run's own start, so a run never prunes itself.
+  const finished = Date.parse(run.startedAt);
   await db.batch([
     db
       .prepare(
