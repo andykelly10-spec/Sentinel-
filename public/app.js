@@ -1,5 +1,5 @@
 import { correlate, distanceMiles, feedsForSites, nearestCameras } from "/cameras.js";
-import { analyseRoute, assessmentInput, avoidZones, compareRoutes, directionsLink, formatChange, indexCrimes, LEVELS, localTime, readCrime, readOsrm, readValhalla, reasons, summarise } from "/precog.js";
+import { analyseRoute, assessmentInput, avoidZones, compareRoutes, crimeBoxes, directionsLink, formatChange, indexCrimes, LEVELS, localTime, mergeCrime, readCrime, readOsrm, readValhalla, reasons, summarise } from "/precog.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const SEVERITY_COLORS = { critical: "#ff5252", high: "#ff8d5c", medium: "#fab219", low: "#8a93a0" };
@@ -2964,7 +2964,10 @@ function routeSummary(summary) {
       t ? stat(`${t.quieterHours}%`, "of hours are quieter", t.quieterHours >= 60 ? "bad" : t.quieterHours <= 25 ? "good" : "") : null,
       t && t.bestChange < -5 ? stat(formatChange(t.bestChange), `if you go at ${t.bestHour} instead`, "good") : null,
     ),
-    t ? null : el("p", { class: "muted small" }, "These records have no times of day, so the risk is the same at every hour."),
+    t || !summary.rows[0].scoredKm ? null : el("p", { class: "muted small" }, "These records have no times of day, so the risk is the same at every hour."),
+    rec.totalKm - rec.scoredKm > 0.5
+      ? el("p", { class: "muted small" }, rec.scoredKm > 0 ? `Crime records cover ${rec.scoredKm} of ${rec.totalKm} km of ${rec.route} (the stretches in covered cities); live Sentinel alerts count along the whole route.` : "No crime records cover this trip, so routes are compared on live Sentinel alerts only.")
+      : null,
     several
       ? el(
           "table",
@@ -3143,7 +3146,7 @@ const liveAlerts = () => state.groups.filter((group) => group.lat !== null && (g
 
 function scoreRoutes(raw) {
   const time = precogTime();
-  const index = precog.data?.index ?? indexCrimes([]);
+  const index = precog.data?.index ?? Object.assign(indexCrimes([]), { boxes: [] });
   const analysed = raw.map((route) => analyseRoute(route, { index, mode: precog.mode, hour: time.hour, weekend: time.weekend, alerts: liveAlerts() }));
   return compareRoutes(analysed, precog.mode);
 }
@@ -3170,16 +3173,33 @@ async function planPrecog() {
     if (!raw.length) throw new Error("No route was found between those places.");
     raw.forEach((route, index) => (route.letter = ROUTE_LETTERS[index]));
 
-    const lats = raw.flatMap((route) => route.coords.map(([lat]) => lat));
-    const lons = raw.flatMap((route) => route.coords.map(([, lon]) => lon));
-    const pad = 0.004;
-    const box = [Math.min(...lats) - pad, Math.min(...lons) - pad, Math.max(...lats) + pad, Math.max(...lons) + pad];
-    if (box[2] - box[0] <= 0.35 && box[3] - box[1] <= 0.35) {
-      precogStatus("Reading months of police records along the way…");
-      const crime = readCrime(await api(`/api/precog/crime?box=${box.map((value) => value.toFixed(4)).join(",")}`));
-      precog.data = { ...crime, index: indexCrimes(crime.crimes), note: crime.sources.length ? null : "No police open-data source covers this area yet (Pre-Cog reads Chicago, DC, Los Angeles, New York, Philadelphia, San Francisco, Seattle, and England, Wales and Northern Ireland). Routes are compared on live Sentinel alerts only." };
+    const boxes = crimeBoxes(raw);
+    if (boxes.length) {
+      precogStatus(`Reading months of police records along the way${boxes.length > 1 ? ` (${boxes.length} areas)` : ""}…`);
+      // A few areas at a time, to be gentle on the police data portals.
+      const results = new Array(boxes.length);
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(4, boxes.length) }, async () => {
+          while (next < boxes.length) {
+            const at = next++;
+            try {
+              results[at] = readCrime(await api(`/api/precog/crime?box=${boxes[at].join(",")}`));
+            } catch {
+              results[at] = { crimes: [], sources: [] };
+            }
+          }
+        }),
+      );
+      const crime = mergeCrime(results);
+      const index = indexCrimes(crime.crimes);
+      // Only stretches whose records were actually read count as covered.
+      index.boxes = boxes.filter((_, at) => results[at].sources.some((source) => !source.error));
+      precog.data = { ...crime, index, note: index.boxes.length ? null : "The police data sources did not answer, so routes are compared on live Sentinel alerts only. Try again in a minute." };
     } else {
-      precog.data = { crimes: [], sources: [], index: indexCrimes([]), note: "This trip is longer than a city, so it is compared on live Sentinel alerts only, not crime records." };
+      const index = indexCrimes([]);
+      index.boxes = [];
+      precog.data = { crimes: [], sources: [], index, note: "No police open-data source covers this trip (Pre-Cog reads Chicago, DC, Los Angeles, New York, Philadelphia, San Francisco, Seattle, and England, Wales and Northern Ireland). Routes are compared on live Sentinel alerts only." };
     }
 
     precogStatus("Predicting risk by hour…");

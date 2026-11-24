@@ -257,7 +257,7 @@ export async function crimeResponse(box: Box, now: Date): Promise<Response> {
 // ---------- routing ----------
 
 export type Mode = "walk" | "drive";
-export const MAX_ROUTE_MILES: Record<Mode, number> = { walk: 15, drive: 120 };
+export const MAX_ROUTE_MILES: Record<Mode, number> = { walk: 15, drive: 500 };
 
 export interface Point {
   lat: number;

@@ -236,23 +236,114 @@ export function indexCrimes(crimes) {
   return { crimes, cells };
 }
 
-// Indices of incidents within `radius` metres of the line.
+// Incidents within `radius` metres of the line, as a map from each one's
+// index to how far along the route (0 to 1) it is first passed.
 export function nearLine(coords, { crimes, cells }, radius) {
-  const found = new Set();
+  const found = new Map();
   const reach = Math.ceil(radius / (CELL * M_PER_DEGREE));
-  for (const point of resample(coords, Math.max(10, radius / 3))) {
+  const samples = resample(coords, Math.max(10, radius / 3));
+  samples.forEach((point, step) => {
     const row = Math.floor(point[0] / CELL);
     const col = Math.floor(point[1] / CELL);
     const reachLon = Math.ceil(reach / Math.max(0.2, Math.cos((point[0] * Math.PI) / 180)));
     for (let i = row - reach; i <= row + reach; i++) {
       for (let j = col - reachLon; j <= col + reachLon; j++) {
         for (const index of cells.get(`${i},${j}`) ?? []) {
-          if (!found.has(index) && metres(point, [crimes[index].lat, crimes[index].lon]) <= radius) found.add(index);
+          if (!found.has(index) && metres(point, [crimes[index].lat, crimes[index].lon]) <= radius) found.set(index, step / Math.max(1, samples.length - 1));
         }
       }
     }
+  });
+  return found;
+}
+
+// ---------- where crime is read ----------
+
+// The areas the police sources cover (as in src/precog.ts), [south, west, north, east].
+export const COVERED_AREAS = {
+  dc: [38.79, -77.12, 39.0, -76.9],
+  chicago: [41.64, -87.94, 42.03, -87.52],
+  nyc: [40.49, -74.26, 40.92, -73.7],
+  la: [33.7, -118.67, 34.34, -118.15],
+  sf: [37.7, -122.52, 37.84, -122.35],
+  seattle: [47.49, -122.44, 47.74, -122.23],
+  philadelphia: [39.86, -75.29, 40.14, -74.95],
+  uk: [49.9, -8.2, 55.8, 1.8],
+};
+const inBox = ([lat, lon], [s, w, n, e]) => lat >= s && lat <= n && lon >= w && lon <= e;
+const covered = (point) => Object.values(COVERED_AREAS).some((area) => inBox(point, area));
+
+const TILE = 0.1;
+const TILE_PAD = 0.004;
+export const MAX_TILES = 14;
+
+// The boxes to read crime for: each 0.1° tile the routes cross inside a
+// covered area, cut down to the stretch of route in it. Long trips keep the
+// tiles nearest the start and the end, where the streets are.
+export function crimeBoxes(routes) {
+  const tiles = new Map();
+  if (!routes.length) return [];
+  const start = routes[0].coords[0];
+  const end = routes[0].coords[routes[0].coords.length - 1];
+  for (const route of routes) {
+    for (const point of resample(route.coords, 150)) {
+      if (!covered(point)) continue;
+      const key = `${Math.floor(point[0] / TILE)},${Math.floor(point[1] / TILE)}`;
+      const tile = tiles.get(key) ?? { s: 90, w: 180, n: -90, e: -180, near: Infinity };
+      tile.s = Math.min(tile.s, point[0]);
+      tile.n = Math.max(tile.n, point[0]);
+      tile.w = Math.min(tile.w, point[1]);
+      tile.e = Math.max(tile.e, point[1]);
+      tile.near = Math.min(tile.near, metres(point, start), metres(point, end));
+      tiles.set(key, tile);
+    }
   }
-  return [...found];
+  const round4 = (value) => Math.round(value * 1e4) / 1e4;
+  return [...tiles.values()]
+    .sort((a, b) => a.near - b.near)
+    .slice(0, MAX_TILES)
+    .map((tile) => [tile.s - TILE_PAD, tile.w - TILE_PAD, tile.n + TILE_PAD, tile.e + TILE_PAD].map(round4));
+}
+
+// Several boxes' answers as one: incidents read twice where boxes overlap are
+// kept once, and each source's figures are added up.
+export function mergeCrime(results) {
+  const seen = new Set();
+  const crimes = [];
+  const sources = new Map();
+  for (const { crimes: found, sources: from } of results) {
+    for (const each of found) {
+      const key = `${each.source}|${each.lat}|${each.lon}|${each.date}|${each.hour}|${each.type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      crimes.push(each);
+    }
+    for (const source of from) {
+      const merged = sources.get(source.name);
+      if (!merged) {
+        sources.set(source.name, { ...source });
+        continue;
+      }
+      merged.count += source.count;
+      merged.days = Math.max(merged.days, source.days);
+      if (source.from !== null) merged.from = merged.from === null ? source.from : Math.min(merged.from, source.from);
+      if (source.to !== null) merged.to = merged.to === null ? source.to : Math.max(merged.to, source.to);
+      if (!source.error) merged.error = null;
+      merged.truncated ||= source.truncated;
+    }
+  }
+  return { crimes, sources: [...sources.values()] };
+}
+
+// Kilometres of the route inside boxes whose crime was read.
+export function coveredKm(coords, boxes) {
+  if (!boxes) return lengthM(coords) / 1000;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const mid = [(coords[i - 1][0] + coords[i][0]) / 2, (coords[i - 1][1] + coords[i][1]) / 2];
+    if (boxes.some((box) => inBox(mid, box))) total += metres(coords[i - 1], coords[i]);
+  }
+  return total / 1000;
 }
 
 // ---------- prediction ----------
@@ -272,18 +363,21 @@ export const dayWeight = (crimeWeekend, weekend) =>
 const NUISANCE = /anti social|public order|disorderly|drug|narcotic|paraphernalia|controlled substance|liquor|loitering|trespass/i;
 export const severity = (each) => (each.violent ? VIOLENT_WEIGHT : NUISANCE.test(each.type) ? 0.5 : 1) * each.rate;
 
-// Expected weighted incidents per 30 days, by hour, for weekdays and weekends.
-export function hourlyProfile(crimes) {
+// Expected weighted incidents per 30 days, by hour of departure, for weekdays
+// and weekends. `offsets` gives each incident's hours into the trip, so on a
+// long drive the far end is judged at the hour you will reach it.
+export function hourlyProfile(crimes, offsets = []) {
   const weekday = new Array(24).fill(0);
   const weekend = new Array(24).fill(0);
-  for (const each of crimes) {
+  crimes.forEach((each, i) => {
     const weight = severity(each);
+    const offset = offsets[i] ?? 0;
     for (let hour = 0; hour < 24; hour++) {
-      const byHour = weight * hourWeight(each.hour, hour);
+      const byHour = weight * hourWeight(each.hour, (hour + offset) % 24);
       weekday[hour] += byHour * dayWeight(each.weekend, false);
       weekend[hour] += byHour * dayWeight(each.weekend, true);
     }
-  }
+  });
   return { weekday, weekend };
 }
 
@@ -350,16 +444,25 @@ const round1 = (value) => Math.round(value * 10) / 10;
 // Everything Pre-Cog says about one route at the planned hour and kind of day.
 export function analyseRoute(route, { index, mode, hour, weekend, alerts = [] }) {
   const radius = CORRIDOR_M[mode];
-  const near = nearLine(route.coords, index, radius).map((i) => index.crimes[i]);
-  const km = Math.max(0.5, route.distanceM / 1000);
-  const profile = hourlyProfile(near);
+  const passed = nearLine(route.coords, index, radius);
+  const near = [...passed.keys()].map((i) => index.crimes[i]);
+  const hours = route.durationS / 3600;
+  const offsets = [...passed.values()].map((at) => Math.round(at * hours) % 24);
+  const totalKm = route.distanceM / 1000;
+  // Risk per km is over the stretch where crime was read (all of it on a walk in a covered city).
+  const scoredKm = Math.min(totalKm, coveredKm(route.coords, index.boxes));
+  const perKm = scoredKm > 0.05 ? Math.max(0.5, scoredKm) : 0;
+  const profile = hourlyProfile(near, offsets);
+  const lats = route.coords.map(([lat]) => lat);
+  const lons = route.coords.map(([, lon]) => lon);
+  const frame = [Math.min(...lats) - 0.01, Math.min(...lons) - 0.01, Math.max(...lats) + 0.01, Math.max(...lons) + 0.01];
   const live = alerts
-    .filter((alert) => Number.isFinite(alert.lat) && Number.isFinite(alert.lon) && LIVE_POINTS[alert.severity])
+    .filter((alert) => Number.isFinite(alert.lat) && Number.isFinite(alert.lon) && LIVE_POINTS[alert.severity] && inBox([alert.lat, alert.lon], frame))
     .map((alert) => ({ alert, distanceM: closest(route.coords, alert) }))
     .filter((each) => each.distanceM <= LIVE_RADIUS_M);
   const livePoints = live.reduce((total, each) => total + LIVE_POINTS[each.alert.severity], 0);
   const day = weekend ? profile.weekend : profile.weekday;
-  const byHour = day.map((value) => round1(value / km + livePoints));
+  const byHour = day.map((value) => round1((perKm ? value / perKm : 0) + livePoints));
   const score = byHour[hour];
   const perMonth = near.reduce((total, each) => total + each.rate, 0);
   const violentPerMonth = near.filter((each) => each.violent).reduce((total, each) => total + each.rate, 0);
@@ -372,8 +475,11 @@ export function analyseRoute(route, { index, mode, hour, weekend, alerts = [] })
     violentPerMonth: round1(violentPerMonth),
     byHour,
     score,
-    // The whole trip's share: intensity per km times distance.
-    exposure: round1((score * route.distanceM) / 1000),
+    // The whole trip's share: intensity per km times the distance it applies to.
+    exposure: round1(score * (perKm || 1)),
+    scoredKm: round1(scoredKm),
+    totalKm: round1(totalKm),
+    arrival: hours >= 1 ? (hour + Math.round(hours)) % 24 : null,
     level: levelFor(score),
     dayAverage: round1(byHour.reduce((a, b) => a + b, 0) / 24),
     peak: timed ? windowLabel(window(day, 3, true), 3) : null,
@@ -385,7 +491,9 @@ export function analyseRoute(route, { index, mode, hour, weekend, alerts = [] })
 }
 
 function closest(coords, { lat, lon }) {
-  return Math.min(...resample(coords, 20).map((point) => metres(point, [lat, lon])));
+  let best = Infinity;
+  for (const point of resample(coords, 20)) best = Math.min(best, metres(point, [lat, lon]));
+  return best;
 }
 
 const minutes = (seconds) => Math.max(1, Math.round(seconds / 60));
@@ -393,9 +501,17 @@ const share = (part, whole) => Math.round((100 * part) / whole);
 
 export function reasons(route, hour) {
   const out = [];
-  if (!route.crimes.length) {
+  if (route.totalKm - route.scoredKm > 0.5) {
+    out.push(
+      route.scoredKm > 0
+        ? `Crime records cover ${route.scoredKm} of this route's ${route.totalKm} km (the stretches in covered cities); live alerts count along all of it.`
+        : `No crime records cover this route; it is compared on live Sentinel alerts only.`,
+    );
+  }
+  if (route.arrival !== null) out.push(`A ${Math.round(route.durationS / 3600)}-hour trip: arriving around ${pad(route.arrival)}, and each stretch is predicted for the hour you reach it.`);
+  if (!route.crimes.length && route.scoredKm > 0) {
     out.push(`No incidents recorded within ${route.radius} m of this route in the data available.`);
-  } else {
+  } else if (route.crimes.length) {
     out.push(
       `About ${Math.round(route.perMonth)} incidents a month recorded within ${route.radius} m${route.violentPerMonth >= 0.5 ? `, ${Math.round(route.violentPerMonth)} of them violent` : ", almost none violent"}.`,
     );
@@ -501,6 +617,8 @@ export function summarise(routes, hour) {
       violentShare: route.crimes.length ? Math.round((100 * route.crimes.filter((each) => each.violent).length) / route.crimes.length) : 0,
       hotspots: route.hotspots.length,
       live: route.live.length,
+      scoredKm: route.scoredKm,
+      totalKm: route.totalKm,
     })),
   };
 }
@@ -544,6 +662,8 @@ export function assessmentInput({ routes, mode, hour, weekend, sources, from, to
       minutes: minutes(route.durationS),
       extraMinutes: route.extraMinutes,
       km: round1(route.distanceM / 1000),
+      kmWithCrimeRecords: route.scoredKm,
+      arrivalHour: route.arrival === null ? null : pad(route.arrival),
       risk: route.score,
       exposure: route.exposure,
       level: route.level.label,

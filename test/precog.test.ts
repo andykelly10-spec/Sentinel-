@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { avoidPolygons, avoidResponse, coveringSources, crimeResponse, MAX_ROWS, parseBox, routesResponse } from "../src/precog";
+import { avoidPolygons, avoidResponse, coveringSources, CRIME_SOURCES, crimeResponse, MAX_ROWS, parseBox, routesResponse } from "../src/precog";
 import {
   analyseRoute,
   avoidZones,
   compareRoutes,
+  COVERED_AREAS,
+  coveredKm,
+  crimeBoxes,
+  MAX_TILES,
+  mergeCrime,
   dayWeight,
   decodePolyline6,
   directionsLink,
@@ -241,6 +246,73 @@ describe("prediction", () => {
   });
 });
 
+describe("long trips", () => {
+  // Chicago to Milwaukee by road, simplified: about 140 km, partly inside Chicago's data.
+  const drive = { coords: Array.from({ length: 141 }, (_, i) => [41.88 + i * 0.0083, -87.63 + i * 0.0003]), distanceM: 140_000, durationS: 2 * 3600, kind: "osrm" };
+
+  it("knows the same covered areas as the worker", () => {
+    expect(COVERED_AREAS).toEqual(Object.fromEntries(CRIME_SOURCES.map((source) => [source.id, source.area])));
+  });
+
+  it("reads crime in small tiles along the covered stretch only", () => {
+    const boxes = crimeBoxes([drive]) as [number, number, number, number][];
+    expect(boxes.length).toBeGreaterThan(1);
+    expect(boxes.length).toBeLessThanOrEqual(MAX_TILES);
+    for (const [s, w, n, e] of boxes) {
+      expect(n - s).toBeLessThanOrEqual(0.11);
+      expect(e - w).toBeLessThanOrEqual(0.11);
+      expect(s).toBeLessThan(42.03); // nothing north of Chicago's data
+    }
+    expect(crimeBoxes([{ ...drive, coords: [[48.85, 2.3], [48.87, 2.36]] }])).toEqual([]);
+  });
+
+  it("keeps the tiles nearest the ends when a trip crosses many", () => {
+    const london = { coords: Array.from({ length: 300 }, (_, i) => [51.5 + i * 0.01, -0.12 - i * 0.008]), distanceM: 400_000, durationS: 5 * 3600, kind: "osrm" };
+    const boxes = crimeBoxes([london]) as [number, number, number, number][];
+    expect(boxes).toHaveLength(MAX_TILES);
+    expect(boxes.some(([s]) => s < 51.52)).toBe(true);
+    expect(boxes.some(([, , n]) => n > 54.4)).toBe(true);
+    expect(boxes.some(([s]) => s > 52.6 && s < 53.4)).toBe(false);
+  });
+
+  it("merges overlapping tiles without counting an incident twice", () => {
+    const one = at(41.9, -87.63);
+    const merged = mergeCrime([
+      { crimes: [one], sources: [{ name: "Chicago", count: 1, days: 180, from: 5, to: 9, error: null }] },
+      { crimes: [{ ...one }, at(41.91, -87.63)], sources: [{ name: "Chicago", count: 2, days: 180, from: 2, to: 7, error: null }] },
+    ]);
+    expect(merged.crimes).toHaveLength(2);
+    expect(merged.sources).toEqual([{ name: "Chicago", count: 3, days: 180, from: 2, to: 9, error: null }]);
+  });
+
+  it("scores only the covered stretch, and judges the far end at the hour you get there", () => {
+    const boxes = crimeBoxes([drive]);
+    expect(coveredKm(drive.coords, boxes)).toBeGreaterThan(10);
+    expect(coveredKm(drive.coords, boxes)).toBeLessThan(25);
+    // An incident beside the covered stretch, inside Chicago.
+    const point = drive.coords[16] as [number, number];
+    const crime = at(point[0], point[1] + 0.0002, { hour: 20, violent: true });
+    const index = Object.assign(indexCrimes([crime]), { boxes });
+    const analysed = analyseRoute(drive, { index, mode: "drive", hour: 20, weekend: false });
+    expect(analysed.crimes).toHaveLength(1);
+    expect(analysed.scoredKm).toBeLessThan(analysed.totalKm);
+    expect(analysed.arrival).toBe(22);
+    expect(reasons(analysed, 20).join(" ")).toContain("Crime records cover");
+    // Uncovered: compared on live alerts only.
+    const bare = analyseRoute(drive, { index: Object.assign(indexCrimes([]), { boxes: [] }), mode: "drive", hour: 20, weekend: false });
+    expect(bare.score).toBe(0);
+    expect(reasons(bare, 20).join(" ")).toContain("live Sentinel alerts only");
+  });
+
+  it("weights incidents near the end of a long drive by the arrival hour", () => {
+    const point = drive.coords[140] as [number, number];
+    const late = at(point[0], point[1], { hour: 22 });
+    const analysed = analyseRoute(drive, { index: indexCrimes([late]), mode: "drive", hour: 20, weekend: false });
+    // Leaving at 20:00 you pass it at 22:00, its peak.
+    expect(analysed.byHour.indexOf(Math.max(...analysed.byHour))).toBe(20);
+  });
+});
+
 describe("the worker side", () => {
   it("accepts only city-sized boxes", () => {
     expect(parseBox("41.87,-87.64,41.9,-87.6")).toEqual([41.87, -87.64, 41.9, -87.6]);
@@ -282,6 +354,7 @@ describe("the worker side", () => {
     expect((await routesResponse(new URLSearchParams({ from: "41.88,-87.63", to: "42.2,-87.63", mode: "walk" }))).status).toBe(400);
     expect((await routesResponse(new URLSearchParams({ from: "41.88,-87.63", to: "41.89,-87.62", mode: "fly" }))).status).toBe(400);
     expect(requested).toHaveLength(0);
+    expect((await routesResponse(new URLSearchParams({ from: "41.88,-87.63", to: "34.05,-118.24", mode: "drive" }))).status).toBe(400);
     const ok = await routesResponse(new URLSearchParams({ from: "41.88,-87.63", to: "41.89,-87.62", mode: "drive" }));
     expect(ok.status).toBe(200);
     expect(requested[0]).toBe("https://routing.openstreetmap.de/routed-car/route/v1/driving/-87.63,41.88;-87.62,41.89?alternatives=3&overview=full&geometries=geojson&steps=false");
