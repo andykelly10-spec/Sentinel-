@@ -372,6 +372,8 @@ export function analyseRoute(route, { index, mode, hour, weekend, alerts = [] })
     violentPerMonth: round1(violentPerMonth),
     byHour,
     score,
+    // The whole trip's share: intensity per km times distance.
+    exposure: round1((score * route.distanceM) / 1000),
     level: levelFor(score),
     dayAverage: round1(byHour.reduce((a, b) => a + b, 0) / 24),
     peak: timed ? windowLabel(window(day, 3, true), 3) : null,
@@ -411,19 +413,99 @@ export function reasons(route, hour) {
 // unless it costs much more time, in which case the safest of the rest.
 export function compareRoutes(routes, mode) {
   if (!routes.length) return routes;
+  // Routes are compared on the whole trip's exposure, so a long detour through
+  // quieter streets does not look safer than it is.
+  const risk = (route) => route.exposure ?? route.score;
+  const lower = (a, b) => (risk(b) < risk(a) || (risk(b) === risk(a) && b.durationS < a.durationS) ? b : a);
   const fastest = routes.reduce((a, b) => (b.durationS < a.durationS ? b : a));
-  const safest = routes.reduce((a, b) => (b.score < a.score || (b.score === a.score && b.durationS < a.durationS) ? b : a));
+  const safest = routes.reduce(lower);
   const limit = fastest.durationS * (mode === "walk" ? 1.5 : 1.35) + 120;
-  const acceptable = routes.filter((route) => route.durationS <= limit);
-  const recommended = acceptable.reduce((a, b) => (b.score < a.score || (b.score === a.score && b.durationS < a.durationS) ? b : a), fastest);
+  const recommended = routes.filter((route) => route.durationS <= limit).reduce(lower, fastest);
   return routes
     .map((route) => ({
       ...route,
       tags: routes.length === 1 ? ["Only route found"] : [route === recommended && "Recommended", route === fastest && "Fastest", route === safest && "Safest", route.kind === "avoid" && "Avoids hotspots"].filter(Boolean),
       extraMinutes: minutes(route.durationS) - minutes(fastest.durationS),
     }))
-    .sort((a, b) => b.tags.includes("Recommended") - a.tags.includes("Recommended") || a.score - b.score);
+    .sort((a, b) => b.tags.includes("Recommended") - a.tags.includes("Recommended") || risk(a) - risk(b));
 }
+
+const percent = (value, base) => (base > 0 ? Math.round((100 * (value - base)) / base) : 0);
+const signed = (value) => `${value > 0 ? "+" : value < 0 ? "−" : "±"}${Math.abs(value)}%`;
+
+// The headline numbers: why the recommended route was chosen, how each route
+// compares with the fastest, and how the planned hour compares with the rest
+// of the day. Percentages compare predicted trip exposure.
+export function summarise(routes, hour) {
+  if (!routes.length) return null;
+  const recommended = routes.find((route) => route.tags.includes("Recommended")) ?? routes[0];
+  const fastest = routes.find((route) => route.tags.includes("Fastest")) ?? recommended;
+  const safest = routes.find((route) => route.tags.includes("Safest")) ?? recommended;
+  const name = (route) => `Route ${route.letter}`;
+  const vsFastest = percent(recommended.exposure, fastest.exposure);
+  const extra = (route) => `${route.extraMinutes} more minute${route.extraMinutes === 1 ? "" : "s"}`;
+
+  let why;
+  if (routes.length === 1) why = "Only one route was found, so Pre-Cog rates it rather than choosing between routes.";
+  else if (recommended === fastest && recommended === safest) why = "It is both the quickest route and the one with the least predicted exposure to recorded crime.";
+  else if (recommended === fastest) {
+    const saving = -percent(safest.exposure, fastest.exposure);
+    why =
+      safest === fastest || saving <= 0
+        ? "It is the quickest, and no alternative lowers the predicted risk."
+        : `It is the quickest. ${name(safest)} would cut predicted exposure by ${saving}%, but takes ${extra(safest)}, more than Pre-Cog trades for safety.`;
+  } else if (recommended === safest) why = `It cuts predicted exposure by ${-vsFastest}% compared with the fastest route, ${name(fastest)}, for ${extra(recommended)}.`;
+  else {
+    why = `It cuts predicted exposure by ${-vsFastest}% compared with the fastest route, ${name(fastest)}, for ${extra(recommended)}. ${name(safest)} is safer still (${signed(percent(safest.exposure, fastest.exposure))}) but takes ${extra(safest)}.`;
+  }
+
+  const day = recommended.byHour;
+  const average = day.reduce((a, b) => a + b, 0) / 24;
+  const varies = Math.max(...day) - Math.min(...day) > 0.05 * Math.max(1, average);
+  let timing = null;
+  if (varies) {
+    const best = day.indexOf(Math.min(...day));
+    const worst = day.indexOf(Math.max(...day));
+    timing = {
+      hour: pad(hour),
+      vsAverage: percent(day[hour], average),
+      // Share of the day's hours that are less risky than the planned one.
+      quieterHours: Math.round((100 * day.filter((value) => value < day[hour]).length) / 24),
+      bestHour: pad(best),
+      bestChange: percent(day[best], day[hour]),
+      worstHour: pad(worst),
+      worstChange: percent(day[worst], day[hour]),
+    };
+  }
+
+  const crimesTotal = recommended.crimes.length;
+  return {
+    recommended: name(recommended),
+    headline:
+      routes.length === 1
+        ? `${name(recommended)}: ${recommended.level.label.toLowerCase()} predicted risk at ${pad(hour)}.`
+        : `Take ${name(recommended)}: ${recommended.level.label.toLowerCase()} predicted risk at ${pad(hour)}${recommended === fastest ? ", and the quickest" : `, ${Math.abs(vsFastest)}% ${vsFastest <= 0 ? "less" : "more"} exposure than the fastest route for ${extra(recommended)}`}.`,
+    why,
+    violentShare: crimesTotal ? Math.round((100 * recommended.crimes.filter((each) => each.violent).length) / crimesTotal) : 0,
+    timing,
+    rows: routes.map((route) => ({
+      route: name(route),
+      tags: route.tags,
+      minutes: minutes(route.durationS),
+      extraMinutes: route.extraMinutes,
+      km: round1(route.distanceM / 1000),
+      level: route.level,
+      score: route.score,
+      exposure: route.exposure,
+      vsFastest: percent(route.exposure, fastest.exposure),
+      violentShare: route.crimes.length ? Math.round((100 * route.crimes.filter((each) => each.violent).length) / route.crimes.length) : 0,
+      hotspots: route.hotspots.length,
+      live: route.live.length,
+    })),
+  };
+}
+
+export const formatChange = signed;
 
 // Hotspots shared by the routes, as zones for a detour to keep out of; the
 // start and end are never excluded.
@@ -451,9 +533,11 @@ export function directionsLink(route, mode) {
 
 // The compact picture sent for the written assessment.
 export function assessmentInput({ routes, mode, hour, weekend, sources, from, to }) {
+  const summary = summarise(routes, hour);
   return {
+    pickedByRules: summary && { recommended: summary.recommended, why: summary.why, violentShareOfIncidentsPercent: summary.violentShare, timing: summary.timing, comparison: summary.rows.map(({ level, ...row }) => ({ ...row, level: level.label })) },
     trip: { mode, from: from.label, to: to.label, plannedHour: pad(hour), dayType: weekend ? "weekend" : "weekday" },
-    scale: "Risk is weighted incidents per km per 30 days at the planned time (violent x3); levels: Low <15, Moderate <40, Elevated <90, High 90+.",
+    scale: "risk is weighted incidents per km per 30 days at the planned time (violent x3); levels: Low <15, Moderate <40, Elevated <90, High 90+. exposure is risk x km, the whole trip's share; routes are compared on exposure. Percentages compare exposure with the fastest route.",
     routes: routes.map((route) => ({
       label: route.label,
       tags: route.tags,
@@ -461,6 +545,7 @@ export function assessmentInput({ routes, mode, hour, weekend, sources, from, to
       extraMinutes: route.extraMinutes,
       km: round1(route.distanceM / 1000),
       risk: route.score,
+      exposure: route.exposure,
       level: route.level.label,
       riskByHour: route.byHour.map(Math.round),
       dailyAverage: route.dayAverage,

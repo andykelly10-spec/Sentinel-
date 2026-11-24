@@ -14,6 +14,7 @@ import {
   readOsrm,
   readValhalla,
   reasons,
+  summarise,
 } from "../public/precog.js";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -190,6 +191,39 @@ describe("prediction", () => {
     expect(rest.map((each: any) => each.tags)).toEqual([["Safest"], ["Fastest"]]);
     expect(compareRoutes([mk(10, 600)], "walk")[0].tags).toEqual(["Only route found"]);
     expect(compareRoutes([mk(80, 600), mk(20, 650, "avoid")], "drive")[0].tags).toEqual(["Recommended", "Safest", "Avoids hotspots"]);
+  });
+
+  it("compares whole trips, so a long detour is not mistaken for a safer one", () => {
+    const mk = (letter: string, score: number, km: number, durationS: number) => ({ ...route(LINE, durationS), letter, distanceM: km * 1000, score, exposure: score * km });
+    const [first] = compareRoutes([mk("A", 113, 1.5, 1200), mk("C", 96, 2.0, 1380)], "walk");
+    expect(first.letter).toBe("A");
+    expect(first.tags).toEqual(["Recommended", "Fastest", "Safest"]);
+  });
+
+  it("summarises the choice with percentages", () => {
+    const flat = new Array(24).fill(10);
+    const curve = Array.from({ length: 24 }, (_, hour) => (hour >= 18 ? 40 : 10));
+    const mk = (letter: string, score: number, durationS: number, byHour: number[], violent: number) => ({
+      ...route(LINE, durationS),
+      letter,
+      score,
+      exposure: score,
+      byHour,
+      level: { label: "Moderate", color: "#d29922" },
+      crimes: Array.from({ length: 10 }, (_, i) => ({ violent: i < violent })),
+      hotspots: [],
+      live: [],
+    });
+    const routes = compareRoutes([mk("A", 100, 600, flat, 5), mk("B", 40, 720, curve, 2), mk("C", 20, 3000, curve, 0)], "walk");
+    const summary = summarise(routes, 20)!;
+    expect(summary.recommended).toBe("Route B");
+    expect(summary.headline).toBe("Take Route B: moderate predicted risk at 20:00, 60% less exposure than the fastest route for 2 more minutes.");
+    expect(summary.why).toBe("It cuts predicted exposure by 60% compared with the fastest route, Route A, for 2 more minutes. Route C is safer still (−80%) but takes 40 more minutes.");
+    expect(summary.violentShare).toBe(20);
+    expect(summary.timing).toMatchObject({ hour: "20:00", vsAverage: 129, quieterHours: 75, bestHour: "00:00", bestChange: -75 });
+    expect(summary.rows.map((row: any) => [row.route, row.vsFastest])).toEqual([["Route B", -60], ["Route C", -80], ["Route A", 0]]);
+    // Without times of day there is no timing advice.
+    expect(summarise(compareRoutes([mk("A", 100, 600, flat, 5)], "walk"), 20)!.timing).toBeNull();
   });
 
   it("builds zones to avoid from hotspots, never at the start or end", () => {

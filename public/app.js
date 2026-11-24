@@ -1,5 +1,5 @@
 import { correlate, distanceMiles, feedsForSites, nearestCameras } from "/cameras.js";
-import { analyseRoute, assessmentInput, avoidZones, compareRoutes, directionsLink, indexCrimes, LEVELS, localTime, readCrime, readOsrm, readValhalla, reasons } from "/precog.js";
+import { analyseRoute, assessmentInput, avoidZones, compareRoutes, directionsLink, formatChange, indexCrimes, LEVELS, localTime, readCrime, readOsrm, readValhalla, reasons, summarise } from "/precog.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const SEVERITY_COLORS = { critical: "#ff5252", high: "#ff8d5c", medium: "#fab219", low: "#8a93a0" };
@@ -2904,6 +2904,7 @@ function precogResults(time) {
     { class: "pc-results" },
     el("h3", {}, `${precog.routes.length} route${precog.routes.length === 1 ? "" : "s"} · ${time.now ? "leaving now" : "at"} ${hourText(time.hour)}${time.now ? "" : time.weekend ? " at the weekend" : " on a weekday"}`),
     noCrime ? el("div", { class: "result" }, precog.data?.note ?? "No crime records cover this area, so routes are compared on live Sentinel alerts only.") : null,
+    routeSummary(summarise(precog.routes, time.hour)),
     ...precog.routes.map((each, index) => routeCard(each, index, max, time)),
     precogAssessmentBox(),
     route.hotspots.length
@@ -2939,6 +2940,57 @@ function precogResults(time) {
   );
 }
 
+// The headline: which route, why, and the numbers behind it.
+function routeSummary(summary) {
+  if (!summary) return null;
+  const tone = (change) => (change < 0 ? "good" : change > 0 ? "bad" : "");
+  const stat = (value, label, className = "") => el("div", { class: `pc-stat ${className}` }, el("strong", {}, value), el("span", {}, label));
+  const rec = summary.rows[0];
+  const t = summary.timing;
+  const several = summary.rows.length > 1;
+  return el(
+    "section",
+    { class: "pc-summary", style: `--level:${rec.level.color}` },
+    el("h3", {}, "Route summary"),
+    el("p", { class: "pc-headline" }, summary.headline),
+    el("p", {}, el("strong", {}, "Why this route: "), summary.why),
+    el(
+      "div",
+      { class: "pc-stats" },
+      stat(rec.level.label, `risk at ${t?.hour ?? "this time"} (${Math.round(rec.score)}/km)`, "level"),
+      several ? stat(formatChange(rec.vsFastest), "exposure vs fastest", tone(rec.vsFastest)) : null,
+      stat(`${summary.violentShare}%`, "of incidents violent", summary.violentShare >= 40 ? "bad" : ""),
+      t ? stat(formatChange(t.vsAverage), `at ${t.hour} vs daily average`, tone(t.vsAverage)) : null,
+      t ? stat(`${t.quieterHours}%`, "of hours are quieter", t.quieterHours >= 60 ? "bad" : t.quieterHours <= 25 ? "good" : "") : null,
+      t && t.bestChange < -5 ? stat(formatChange(t.bestChange), `if you go at ${t.bestHour} instead`, "good") : null,
+    ),
+    t ? null : el("p", { class: "muted small" }, "These records have no times of day, so the risk is the same at every hour."),
+    several
+      ? el(
+          "table",
+          { class: "pc-compare" },
+          el("thead", {}, el("tr", {}, ...["Route", "Time", "Risk", "vs fastest", "Violent", "Hotspots"].map((h) => el("th", {}, h)))),
+          el(
+            "tbody",
+            {},
+            ...summary.rows.map((row, index) =>
+              el(
+                "tr",
+                { class: index === precog.selected ? "selected" : "", onclick: () => selectRoute(index) },
+                el("td", {}, row.route.replace("Route ", ""), row.tags.includes("Recommended") ? el("span", { class: "pc-star", title: "Recommended" }, " ★") : null),
+                el("td", { class: "num" }, `${row.minutes}m${row.extraMinutes > 0 ? ` +${row.extraMinutes}` : ""}`),
+                el("td", {}, el("span", { class: "pc-dot", style: `--level:${row.level.color}` }), `${row.level.label} ${Math.round(row.score)}`),
+                el("td", { class: `num ${tone(row.vsFastest)}` }, row.tags.includes("Fastest") ? "—" : formatChange(row.vsFastest)),
+                el("td", { class: "num" }, `${row.violentShare}%`),
+                el("td", { class: "num" }, String(row.hotspots + row.live)),
+              ),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+
 function routeCard(route, index, max, time) {
   const selected = index === precog.selected;
   const bars = el(
@@ -2961,7 +3013,7 @@ function routeCard(route, index, max, time) {
     el(
       "div",
       { class: "pc-meta" },
-      `${Math.max(1, Math.round(route.durationS / 60))} min · ${(route.distanceM / 1000).toFixed(1)} km${route.extraMinutes > 0 ? ` · +${route.extraMinutes} min` : ""}${route.peak ? ` · crime peaks ${route.peak}` : ""}`,
+      `${Math.max(1, Math.round(route.durationS / 60))} min · ${(route.distanceM / 1000).toFixed(1)} km${route.extraMinutes > 0 ? ` · +${route.extraMinutes} min` : ""} · exposure ${Math.round(route.exposure)}${route.peak ? ` · crime peaks ${route.peak}` : ""}`,
     ),
     bars,
     el("div", { class: "pc-axis", "aria-hidden": "true" }, el("span", {}, "00"), el("span", {}, "06"), el("span", {}, "12"), el("span", {}, "18"), el("span", {}, "24")),
